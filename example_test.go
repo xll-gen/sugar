@@ -145,3 +145,33 @@ func ExampleChain_AutoRelease() {
 	fmt.Println("AutoRelease chain executed without error.")
 	// Output: AutoRelease chain executed without error.
 }
+
+// This example demonstrates using the Store method in AutoRelease mode.
+func ExampleChain_StoreAutoRelease() {
+	excel, cleanup := excelTestSetup()
+	if excel == nil {
+		return
+	}
+	defer cleanup()
+
+	From(excel).AutoRelease().Get("Workbooks").Call("Add").Err()
+
+	var sheet *ole.IDispatch
+	err := From(excel).
+		AutoRelease().
+		Get("ActiveSheet").
+		Store(&sheet).
+		Err()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// The chain has been terminated, but 'sheet' is now a separate, valid object.
+	// The user is responsible for releasing it.
+	defer sheet.Release()
+
+	// Use the stored object in a new chain.
+	val, _ := From(sheet).Get("Name").Value()
+	fmt.Printf("Stored sheet name: %v", val)
+	// Output: Stored sheet name: Sheet1
+}
