@@ -1,0 +1,364 @@
+## Development Setup
+
+For optimal developer experience (DX), please ensure `go-task` and `flatc` are a
+vailable before starting work.
+
+1.  **Install `go-task`**:
+    Refer to [Task Installation](https://taskfile.dev/installation/).
+
+2.  **Prepare Environment**:
+    Run the following command to verify tools and automatically download `flatc`
+ v25.9.23 (if missing):
+    ```bash
+    task setup
+    ```
+    This ensures `flatc` is cached locally without creating binary artifacts in
+the repository.
+
+## 16. Directory Structure & Asset Generation
+
+Understanding how source files in the repository map to the generated project st
+ructure is crucial for correctly handling `#include` paths in C++.
+
+### 16.1 Source Layout (`internal/assets/files`)
+
+The embedded C++ assets are organized in the `xll-gen` repository as follows:
+
+```text
+internal/assets/files/
+├── src/                    # Source files (.cpp)
+│   ├── xll_worker.cpp
+│   ├── xll_log.cpp
+│   └── ...
+├── include/                # Header files (.h)
+│   ├── xll_worker.h
+│   ├── xll_log.h
+│   └── ...
+└── tools/
+    └── compressor.cpp
+```
+
+### 16.2 Generated Layout (`generated/cpp`)
+
+When `xll-gen generate` runs, it restructures these assets into a clean C++ proj
+ect layout within `generated/cpp/`.
+
+```text
+my-project/generated/cpp/
+├── xll_main.cpp            # From xll_main.cpp.tmpl
+├── CMakeLists.txt
+├── src/                    # Implementation files
+│   ├── xll_worker.cpp
+│   ├── xll_log.cpp
+│   └── ...
+├── include/                # Header files
+│   ├── xll_worker.h
+│   ├── xll_log.h
+│   └── ...
+└── tools/
+    └── compressor.cpp
+```
+
+### 16.3 Include Paths & CMake
+
+The generated `CMakeLists.txt` configures include directories to allow **flat in
+cludes**:
+
+```cmake
+target_include_directories(${PROJECT_NAME} PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+```
+
+**Include Resolution Rules:**
+
+1.  **NO `include/` Prefix:**
+    *   Do **not** use `#include "include/Header.h"`.
+    *   **Correct:** `#include "Header.h"`.
+
+2.  **Resolution Logic:**
+    *   The build system adds `generated/cpp/include` to the include path.
+    *   Therefore, `xll_worker.h` (in `generated/cpp/include/`) is found directl
+y as `"xll_worker.h"`.
+    *   This applies to `xll_main.cpp` (root), files in `src/`, and files in `in
+clude/`.
+
+**Best Practice:**
+*   Place `.cpp` files in `internal/assets/files/src/`.
+*   Place `.h` files in `internal/assets/files/include/`.
+*   In all C++ code (templates and assets), use **flat includes**: `#include "xl
+l_log.h"`.
+*   Never bake the directory structure (like `include/` or `src/`) into the `#in
+clude` directive.
+
+## 17. Dependencies & External Types
+
+As of v0.1.0, core Excel types and utilities have been extracted to the upstream
+ library [github.com/xll-gen/types](https://github.com/xll-gen/types).
+
+### 17.1 Go Dependencies
+- **Protocol**: Go code for IPC (Flatbuffers) is imported from `github.com/xll-g
+en/types/go/protocol`. The local `pkg/protocol` has been removed.
+- **Server**: Static server logic resides in `pkg/server`. This package is impor
+ted by the generated `server.go`.
+
+### 17.2 C++ Dependencies
+- **Types Library**: The generated `CMakeLists.txt` uses `FetchContent` to downl
+oad `github.com/xll-gen/types`.
+- **Include Paths**: Common headers are included via the `types/` prefix:
+    - `#include "types/protocol_generated.h"` (Replaced static asset)
+    - `#include "types/converters.h"`
+    - `#include "types/mem.h"`
+    - `#include "types/xlcall.h"`
+    - `#include "types/utility.h"`
+    - `#include "types/ObjectPool.h"`
+    - `#include "types/PascalString.h"`
+
+This reduces code duplication in `internal/assets/files` and ensures consistency
+ across generated projects.
+
+## 18. Co-Change Clusters
+
+Certain parts of the codebase are tightly coupled and must be updated together t
+o preserve consistency.
+
+### 18.1 Protocol & Types
+The `protocol.fbs` definition is critical.
+1.  **Schema Source**: `internal/templates/protocol.fbs` is the source for user
+C++ generation.
+2.  **Go Types**: `github.com/xll-gen/types` (External Repo) is the source for t
+he Go server package.
+**Constraint**: These must be byte-compatible. Any change to `internal/templates
+/protocol.fbs` requires a simultaneous update to `xll-gen/types`, a new release
+of `types`, and a `go get` update in `dependencies.go`.
+
+### 18.2 Shared Dependencies
+The versions of core dependencies must be synchronized across the build system,
+the generator, and the toolchain:
+1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (defines `GIT_TAG` f
+or `shm`, `types`, `flatbuffers`, `zstd`, and `phmap`).
+2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` comma
+nds for `shm` and `types`).
+3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must
+match `flatbuffers` in CMake).
+4.  **Verification**: `cmd/doctor_version_test.go` (`TestFlatbuffersVersionConsi
+stency`) enforces that the `flatc` version in Go matches the CMake tag.
+5.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testin
+g and tool stability).
+
+### 18.3 Event Handling
+When adding a new Excel event (e.g., `SheetActivate`):
+1.  **Config**: Update `internal/config/config.go` (`Event` struct validation).
+2.  **Mapping**: Update `internal/generator/funcmap.go` (`lookupEventCode`, `loo
+kupEventId`).
+3.  **Upstream**: Ensure `github.com/xll-gen/types` contains the `xlEvent` const
+ant.
+4.  **Schema**: Update `internal/templates/protocol.fbs` if the event requires a
+ specific payload structure.
+
+### 18.4 Type System Extensions
+When adding or modifying a data type (e.g., adding `date` support):
+1.  **Configuration**: Update `internal/config/config.go` (`validArgTypes`, `val
+idReturnTypes`).
+2.  **Metadata**: Update `internal/generator/types.go` (`typeRegistry`).
+3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member
+).
+4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type.
+
+### 18.5 Regression Test Assets
+The integration tests in `internal/regtest` rely on a fixed set of files that mu
+st stay in sync.
+1.  **Test Project**: `internal/regtest/testdata/xll.yaml` defines the function
+signatures and order.
+2.  **Mock Host**: `internal/regtest/testdata/mock_host.cpp` hardcodes message I
+Ds (e.g., `133`) and payload structures based on `xll.yaml`.
+3.  **Go Server**: `internal/regtest/testdata/server.go` implements handlers mat
+ching `xll.yaml`.
+**Constraint**: Any change to `testdata/xll.yaml` (e.g., adding a function) requ
+ires updating `mock_host.cpp` (new ID/case) and `server.go`.
+
+### 18.6 Message ID Allocation
+Message IDs are distributed across multiple definitions and must match exactly.
+1.  **Definitions**: `internal/assets/files/include/xll_ipc.h` and `pkg/server/t
+ypes.go` define constants (e.g., `MSG_USER_START = 140`, `MSG_CALCULATION_ENDED
+= 131`, `MSG_RTD_CONNECT = 133`).
+2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` manually calcula
+tes user IDs (`140 + $i`).
+3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates
+user IDs (`140 + $i`).
+4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131
+"` for `CalculationEnded`).
+**Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg
+/server`, and `mock_host.cpp` must be updated.
+
+### 18.7 Configuration System
+The configuration structure is coupled with the generator templates.
+1.  **Definition**: `internal/config/config.go` defines the `Config` struct and
+validation logic.
+2.  **Templates**: `internal/templates/xll_main.cpp.tmpl` and `server.go.tmpl` r
+ely on the specific field names and structure of the `Config` object.
+**Constraint**: Adding or renaming fields in `xll.yaml` (and thus `Config`) requ
+ires verifying and updating both the validation logic and the usage in templates
+.
+
+### 18.8 Import Path Rewriting
+The generator dynamically rewrites generated Go imports to match the external `t
+ypes` repository structure.
+1.  **Rewriter**: `internal/generator/dependencies.go` (`fixGoImports`) contains
+ regex logic to replace local `protocol` imports with `github.com/xll-gen/types/
+go/protocol`.
+2.  **Target**: The external repository `github.com/xll-gen/types` must maintain
+ this exact package path.
+**Constraint**: If the `types` repository structure changes (e.g., moving `go/pr
+otocol` to `protocol`), the regex in `dependencies.go` must be updated immediate
+ly.
+
+### 18.9 Template & Runtime Coupling
+The logic in generated templates often relies on specific APIs exposed by the st
+atic runtime packages.
+1.  **Go Server**: `internal/templates/server.go.tmpl` calls functions in `pkg/s
+erver` (e.g., `NewAsyncBatcher`, `ChunkManager`). Signatures must match exactly.
+2.  **C++ Host**: `internal/templates/xll_main.cpp.tmpl` calls functions in `int
+ernal/assets/files/include/xll_ipc.h` (e.g., `StartWorker`).
+**Constraint**: Refactoring `pkg/server` or C++ assets is a breaking change for
+the generator templates. Always verify templates compile after modifying static
+runtime code.
+
+## 19. Excel XLL Registration Rules
+
+When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
+se strict rules to avoid Excel registration failures or immediate unloads.
+
+### 19.1 Type String Format
+1.  **Thread Safety**: Always append `$` to the end of the type string to mark t
+he function as thread-safe.
+2.  **Synchronous Functions** (`mode: "sync"`):
+    *   Format: `[ReturnTypeChar][ArgTypeChars]$`
+    *   Example: `QJJ$` (Returns `LPXLOPER12`, takes two `long` integers).
+3.  **Asynchronous Functions** (`mode: "async"`):
+    *   **Note**: The `async: true` configuration field is deprecated. Use `mode
+: "async"` in `xll.yaml` instead.
+    *   Format: `>[ArgTypeChars]X$`
+    *   **CRITICAL**: Omit the return type character (e.g., `Q`). The `X` charac
+ter (Async Handle) acts as the return parameter placeholder in the type string.
+    *   Example: `>QX$` (Takes a string `Q`, uses async handle `X`).
+4.  **RTD Functions** (`mode: "rtd"`):
+    *   Format: `Q$` (Always returns `LPXLOPER12` via `xlfRtd`).
+
+### 19.2 Argument Mapping
+*   **Return Types**: Use `lookupXllType` (usually returns `Q` for `LPXLOPER12`)
+.
+*   **Argument Types**: Use `lookupArgXllType`.
+    *   `int` -> `J` (long)
+    *   `float` -> `B` (double)
+    *   `bool` -> `A` (bool)
+    *   `string`/`any`/`range` -> `Q`/`U` (LPXLOPER12)
+*   **Mismatches**: Ensure the C++ function signature matches these types (e.g.,
+ `int32_t` for `J`, `double` for `B`). A mismatch will cause stack corruption or
+ Excel crashes.
+
+## 20. Excel Load/Unload Patterns & SHM Lifecycle
+
+Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry poi
+nts, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for a
+ctual use. This also applies when an Add-in is disabled or forcefully unloaded w
+hile background threads are running.
+
+### 20.1 Crash on Unload Issue
+If global `std::thread` objects (like `g_monitorThread` or `g_workerThread`) are
+ destroyed while they are still **joinable** during `DLL_PROCESS_DETACH`, the C+
++ runtime will call `std::terminate()`. This causes the Excel process to crash o
+r the Add-in to "disappear" (detach) immediately.
+
+### 20.2 The Detach Solution
+To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
+
+1.  **Check Unload State**: If `DLL_PROCESS_DETACH` is called and our explicit c
+leanup function (`xlAutoClose`) has **not** run (indicated by `!g_isUnloading`),
+ it means we are in a forced unload scenario.
+2.  **Leak, Don't Crash**: In this specific case, we explicitly call `.detach()`
+ on global thread objects.
+    *   This prevents the destructor from calling `std::terminate()`.
+    *   The threads continue running (leaked) until the OS cleans up the process
+ resources.
+    *   This is safer than crashing the host process.
+3.  **Precedent**: This strategy is also observed in other advanced Excel framew
+orks like [xlOil](https://github.com/cunnane/xloil), which implements a `detachP
+lugins` mechanism to handle similar lifecycle challenges.
+
+**Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp`
+(`DllMain`).
+
+## 21. C++ Name Mangling & Export Rules
+
+All functions intended to be called by Excel (entry points like `xlAutoOpen` and
+ all user-defined XLL functions) must be exported with **C linkage** to prevent
+C++ name mangling.
+
+### 21.1 The Requirement
+If a function is defined as `__declspec(dllexport) void __stdcall MyFunc()`, the
+ C++ compiler will mangle its name (e.g., `_Z7MyFuncv`). Excel's `xlfRegister` f
+unction expects the exact name provided in the registration string. If the name
+is mangled, registration will fail silently or return error code 1 (`xlretFailed
+`).
+
+### 21.2 Correct Export Pattern
+Always use `extern "C"` in combination with `__declspec(dllexport)` and `__stdca
+ll`:
+
+```cpp
+extern "C" __declspec(dllexport) LPXLOPER12 __stdcall MyFunction(int32_t a) {
+    // ...
+}
+```
+
+### 21.3 Template Implementation
+In `internal/templates/xll_main.cpp.tmpl`, all user-defined functions and built-
+in event handlers (like `CalculationEnded`) must be wrapped in `extern "C"`.
+
+**Verification**: Use `dumpbin /exports <filename>.xll` (Windows SDK) or `nm -D
+<filename>.xll` (MinGW) to verify that the exported names are "clean" and not ma
+ngled.
+
+## 22. RTD RefreshData SAFEARRAY Layout
+
+The `IRtdServer::RefreshData` method must return a two-dimensional `SAFEARRAY` o
+f `VARIANT`s with a specific layout for Excel to correctly process real-time upd
+ates.
+
+### 22.1 Required Layout: `[2][TopicCount]`
+
+Excel expects a **2-row array** where:
+*   **Row 0**: Contains the **Topic IDs** (as `VT_I4`).
+*   **Row 1**: Contains the **Values** (as `VT_BSTR`, `VT_R8`, etc.).
+
+### 22.2 SAFEARRAY Dimension Order (C++)
+
+In C++, `SAFEARRAYBOUND` array is defined from the **least significant** (rightm
+ost) dimension to the **most significant** (leftmost) dimension.
+
+To achieve a `[2][TopicCount]` (2 Rows, N Columns) layout:
+1.  **`bounds[0]` (Rightmost / Columns)**: Set `cElements` to the number of topi
+cs being updated (`TopicCount`).
+2.  **`bounds[1]` (Leftmost / Rows)**: Set `cElements` to `2`.
+
+```cpp
+SAFEARRAYBOUND bounds[2];
+bounds[0].cElements = *TopicCount; // Columns
+bounds[0].lLbound = 0;
+bounds[1].cElements = 2;           // Rows
+bounds[1].lLbound = 0;
+```
+
+### 22.3 Indexing with `SafeArrayPutElement`
+
+The `indices` array passed to `SafeArrayPutElement` is **strictly position-based
+**, where `indices[0]` is the leftmost dimension.
+
+*   **Topic ID**: `indices[0] = 0` (Row 0), `indices[1] = i` (Column i).
+*   **Value**: `indices[0] = 1` (Row 1), `indices[1] = i` (Column i).
+
+Failure to follow this exact layout (e.g., swapping Rows and Columns) will resul
+t in Excel failing to update the cell values, often causing them to stay stuck a
+t "Connecting...".
