@@ -101,8 +101,9 @@ func (c *Chain) Put(prop string, params ...interface{}) *Chain {
 	return c
 }
 
-// Store saves the current IDispatch object to an external variable.
-// The user is responsible for calling Release on the stored object.
+// Store transfers ownership of the current IDispatch object to an external
+// variable. The user becomes responsible for calling Release on the stored
+// object, regardless of whether the chain is in AutoRelease mode.
 func (c *Chain) Store(target **ole.IDispatch) *Chain {
 	if c.err != nil {
 		return c
@@ -110,9 +111,26 @@ func (c *Chain) Store(target **ole.IDispatch) *Chain {
 	if c.disp == nil {
 		return c
 	}
-	// Increase the reference count as we are creating a new reference for the user.
+
+	// Create a new reference for the user.
 	c.disp.AddRef()
 	*target = c.disp
+
+	// Decouple the object from the chain's lifecycle management.
+	if c.autoRelease {
+		// In auto-release mode, remove the finalizer as the user is now responsible.
+		runtime.SetFinalizer(c.disp, nil)
+	} else {
+		// In manual mode, remove the object from the release chain.
+		// The current disp is always the last one added.
+		if len(c.releaseChain) > 0 {
+			lastIndex := len(c.releaseChain) - 1
+			if c.releaseChain[lastIndex] == c.disp {
+				c.releaseChain = c.releaseChain[:lastIndex]
+			}
+		}
+	}
+
 	return c
 }
 
