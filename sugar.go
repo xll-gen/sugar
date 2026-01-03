@@ -26,6 +26,54 @@ func From(disp *ole.IDispatch) *Chain {
 	}
 }
 
+// Create starts a new chain by creating a new COM object from the given
+// ProgID. The user is responsible for calling ole.CoInitialize and
+// ole.CoUninitialize. The chain takes ownership of the created object and
+// will release it when a terminal method (Release, Value, Err) is called.
+func Create(progID string) *Chain {
+	unknown, err := oleutil.CreateObject(progID)
+	if err != nil {
+		return &Chain{err: err}
+	}
+
+	disp, err := unknown.QueryInterface(ole.IID_IDispatch)
+	if err != nil {
+		unknown.Release()
+		return &Chain{err: err}
+	}
+	unknown.Release()
+
+	// The chain is responsible for releasing the created object.
+	return &Chain{
+		disp:         disp,
+		releaseChain: []*ole.IDispatch{disp},
+	}
+}
+
+// GetActive starts a new chain by attaching to a running COM object from the
+// given ProgID. The user is responsible for calling ole.CoInitialize and
+// ole.CoUninitialize. The chain takes ownership of the object and will
+// release it when a terminal method (Release, Value, Err) is called.
+func GetActive(progID string) *Chain {
+	unknown, err := oleutil.GetActiveObject(progID)
+	if err != nil {
+		return &Chain{err: err}
+	}
+
+	disp, err := unknown.QueryInterface(ole.IID_IDispatch)
+	if err != nil {
+		unknown.Release()
+		return &Chain{err: err}
+	}
+	unknown.Release()
+
+	// The chain is responsible for releasing the object.
+	return &Chain{
+		disp:         disp,
+		releaseChain: []*ole.IDispatch{disp},
+	}
+}
+
 // AutoRelease switches the chain to automatic resource management mode.
 // Any subsequent IDispatch objects created by Get or Call will be released
 // automatically by the garbage collector.

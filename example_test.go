@@ -65,6 +65,42 @@ func ExampleChain_manual() {
 	// Output: Newly created workbook is named: Book1
 }
 
+// This example demonstrates creating a new COM object with Create.
+func ExampleCreate() {
+	ole.CoInitialize(0)
+	defer ole.CoUninitialize()
+
+	err := Create("Excel.Application").
+		Call("Quit"). // Quit the application immediately.
+		Release()     // Release the application object.
+
+	if err != nil {
+		// Excel might not be installed.
+		log.Println("Failed to run create/quit example:", err)
+		return
+	}
+
+	fmt.Println("Create and Quit successful.")
+	// Output: Create and Quit successful.
+}
+
+// This example demonstrates getting an active object.
+func ExampleGetActive() {
+	ole.CoInitialize(0)
+	defer ole.CoUninitialize()
+
+	// This example will fail if Excel is not running, which is expected in a
+	// test environment where we don't start it first.
+	err := GetActive("Excel.Application").Release()
+	if err != nil {
+		fmt.Println("GetActive failed as expected.")
+	} else {
+		// This would be the success case.
+		fmt.Println("GetActive succeeded.")
+	}
+	// Output: GetActive failed as expected.
+}
+
 // This example demonstrates how to get a value from the chain.
 func ExampleChain_Value() {
 	excel, cleanup := excelTestSetup()
