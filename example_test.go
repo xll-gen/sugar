@@ -134,20 +134,11 @@ func ExampleChain_Store() {
 
 	From(excel).Get("Workbooks").Call("Add").Release()
 
-	var sheet *ole.IDispatch
-	defer func() {
-		if sheet != nil {
-			sheet.Release()
-		}
-	}()
-
-	err := From(excel).
-		Get("ActiveSheet").
-		Store(&sheet).
-		Err()
+	sheet, err := From(excel).Get("ActiveSheet").Store()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer sheet.Release()
 
 	// Now 'sheet' can be used multiple times, ensuring each chain is terminated.
 	From(sheet).Get("Cells", 1, 1).Put("Value", "Hello").Release()
@@ -192,12 +183,10 @@ func ExampleChain_StoreAutoRelease() {
 
 	From(excel).AutoRelease().Get("Workbooks").Call("Add").Err()
 
-	var sheet *ole.IDispatch
-	err := From(excel).
+	sheet, err := From(excel).
 		AutoRelease().
 		Get("ActiveSheet").
-		Store(&sheet).
-		Err()
+		Store()
 	if err != nil {
 		log.Fatal(err)
 	}

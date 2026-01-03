@@ -3,6 +3,7 @@
 package sugar
 
 import (
+	"errors"
 	"runtime"
 
 	"github.com/go-ole/go-ole"
@@ -149,37 +150,42 @@ func (c *Chain) Put(prop string, params ...interface{}) *Chain {
 	return c
 }
 
-// Store transfers ownership of the current IDispatch object to an external
-// variable. The user becomes responsible for calling Release on the stored
-// object, regardless of whether the chain is in AutoRelease mode.
-func (c *Chain) Store(target **ole.IDispatch) *Chain {
+// Store is a terminal method that transfers ownership of the current IDispatch
+// object to the caller. The user is responsible for calling Release on the
+// returned object. This method also releases all other resources managed by the
+// chain.
+func (c *Chain) Store() (*ole.IDispatch, error) {
 	if c.err != nil {
-		return c
+		c.Release() // Release other resources
+		return nil, c.err
 	}
 	if c.disp == nil {
-		return c
+		c.Release()
+		return nil, errors.New("no IDispatch object to store")
 	}
 
-	// Create a new reference for the user.
-	c.disp.AddRef()
-	*target = c.disp
+	// The object to be returned to the user.
+	storedDisp := c.disp
 
-	// Decouple the object from the chain's lifecycle management.
+	// Decouple the stored object from the chain's lifecycle management.
 	if c.autoRelease {
 		// In auto-release mode, remove the finalizer as the user is now responsible.
-		runtime.SetFinalizer(c.disp, nil)
+		runtime.SetFinalizer(storedDisp, nil)
 	} else {
 		// In manual mode, remove the object from the release chain.
 		// The current disp is always the last one added.
 		if len(c.releaseChain) > 0 {
 			lastIndex := len(c.releaseChain) - 1
-			if c.releaseChain[lastIndex] == c.disp {
+			if c.releaseChain[lastIndex] == storedDisp {
 				c.releaseChain = c.releaseChain[:lastIndex]
 			}
 		}
 	}
 
-	return c
+	// Release any other resources held by the chain.
+	c.Release()
+
+	return storedDisp, nil
 }
 
 // Release releases all intermediate IDispatch objects created during the chain
