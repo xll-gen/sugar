@@ -160,6 +160,14 @@ sugar.From(sheet).Put("Cells", 1, 1, "Hello").Release()
 sugar.From(sheet).Put("Cells", 1, 2, "World").Release()
 ```
 
+## Expression-Based Automation
+
+The `expression` subpackage provides a powerful way to interact with COM objects using simple string expressions, which is ideal for simplifying complex or deeply nested operations.
+
+Here is a complete example of how to use it with Excel:
+
+[embed:example_test.go-Example_expression]
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
