@@ -4,7 +4,6 @@ package sugar
 
 import (
 	"errors"
-	"runtime"
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -15,7 +14,6 @@ type Chain struct {
 	disp         *ole.IDispatch
 	err          error
 	lastResult   *ole.VARIANT
-	autoRelease  bool
 	releaseChain []*ole.IDispatch
 }
 
@@ -75,17 +73,6 @@ func GetActive(progID string) *Chain {
 	}
 }
 
-// AutoRelease switches the chain to automatic resource management mode.
-// Any subsequent IDispatch objects created by Get or Call will be released
-// automatically by the garbage collector.
-func (c *Chain) AutoRelease() *Chain {
-	if c.err != nil {
-		return c
-	}
-	c.autoRelease = true
-	return c
-}
-
 // handleResult is a helper function to process the result of GetProperty and CallMethod.
 func (c *Chain) handleResult(result *ole.VARIANT, err error) *Chain {
 	if err != nil {
@@ -100,13 +87,7 @@ func (c *Chain) handleResult(result *ole.VARIANT, err error) *Chain {
 
 	if result.VT == ole.VT_DISPATCH {
 		newDisp := result.ToIDispatch()
-		if c.autoRelease {
-			runtime.SetFinalizer(newDisp, func(disp *ole.IDispatch) {
-				disp.Release()
-			})
-		} else {
-			c.releaseChain = append(c.releaseChain, newDisp)
-		}
+		c.releaseChain = append(c.releaseChain, newDisp)
 		c.disp = newDisp
 	}
 
@@ -168,17 +149,12 @@ func (c *Chain) Store() (*ole.IDispatch, error) {
 	storedDisp := c.disp
 
 	// Decouple the stored object from the chain's lifecycle management.
-	if c.autoRelease {
-		// In auto-release mode, remove the finalizer as the user is now responsible.
-		runtime.SetFinalizer(storedDisp, nil)
-	} else {
-		// In manual mode, remove the object from the release chain.
-		// The current disp is always the last one added.
-		if len(c.releaseChain) > 0 {
-			lastIndex := len(c.releaseChain) - 1
-			if c.releaseChain[lastIndex] == storedDisp {
-				c.releaseChain = c.releaseChain[:lastIndex]
-			}
+	// Remove the object from the release chain.
+	// The current disp is always the last one added.
+	if len(c.releaseChain) > 0 {
+		lastIndex := len(c.releaseChain) - 1
+		if c.releaseChain[lastIndex] == storedDisp {
+			c.releaseChain = c.releaseChain[:lastIndex]
 		}
 	}
 
@@ -189,8 +165,7 @@ func (c *Chain) Store() (*ole.IDispatch, error) {
 }
 
 // Release releases all intermediate IDispatch objects created during the chain
-// in the reverse order of their creation. It should be used when the chain is
-// in manual resource management mode (the default).
+// in the reverse order of their creation.
 func (c *Chain) Release() error {
 	for i := len(c.releaseChain) - 1; i >= 0; i-- {
 		c.releaseChain[i].Release()
@@ -203,6 +178,11 @@ func (c *Chain) Release() error {
 	}
 
 	return c.err
+}
+
+// IsDispatch returns true if the last result is a dispatch object.
+func (c *Chain) IsDispatch() bool {
+	return c.lastResult != nil && c.lastResult.VT == ole.VT_DISPATCH
 }
 
 // Value retrieves the value from the last operation (Get or Call). It also
@@ -220,6 +200,11 @@ func (c *Chain) Value() (interface{}, error) {
 		return nil, c.err // No value to return
 	}
 
+	if c.lastResult.VT == ole.VT_DISPATCH {
+		c.Release()
+		return nil, errors.New("value cannot return IDispatch, use Store() instead")
+	}
+
 	val := c.lastResult.Value()
 	err := c.Release() // Release resources after getting the value
 	return val, err
@@ -230,6 +215,5 @@ func (c *Chain) Value() (interface{}, error) {
 func (c *Chain) Err() error {
 	// To prevent resource leaks, Err() must also release resources.
 	// The behavior is now consistent with Value() and Release().
-	// In AutoRelease mode, this will do nothing as releaseChain will be empty.
 	return c.Release()
 }

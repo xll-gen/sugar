@@ -8,7 +8,6 @@ This library is designed to manage the complexity of COM object lifecycles, offe
 
 - **Fluent, Chainable Interface:** Write clean and readable automation scripts.
 - **Simplified Object Lifecycle:** Clear and predictable resource management.
-- **Flexible Resource Management:** Choose between manual control (default) or garbage-collector-based automatic cleanup.
 - **Easy Object Creation:** Functions to create new COM objects (`Create`), attach to existing ones (`GetActive`), or wrap your own (`From`).
 - **Error Handling:** Errors are captured and handled at the end of the chain.
 
@@ -85,11 +84,7 @@ There are three ways to start a chain:
 
 ### 4. Resource Management
 
-`sugar` provides two modes for managing the lifecycle of COM objects created *during* a chain (i.e., from `Get` or `Call`).
-
-#### Manual Mode (Default)
-
-By default, all objects created in a chain are tracked and released only when a terminal method (`Release`, `Value`, `Err`) is called. This gives you deterministic and immediate cleanup.
+All objects created in a chain are tracked and released only when a terminal method (`Release`, `Value`, `Err`) is called. This gives you deterministic and immediate cleanup.
 
 ```go
 // All intermediate objects (Workbooks, new Workbook) are released at the end.
@@ -97,19 +92,6 @@ err := sugar.Create("Excel.Application").
     Get("Workbooks").
     Call("Add").
     Release() // Releases Excel, the Workbooks object, and the new Workbook object.
-```
-
-#### Automatic Mode (`AutoRelease`)
-
-You can opt into garbage-collector-based cleanup by calling `AutoRelease()` on the chain. In this mode, you don't need to call a terminal method to release resources, but you should still use one to check for errors.
-
-`AutoRelease` is useful for "fire-and-forget" scenarios or when object lifetimes are complex. However, it makes cleanup non-deterministic.
-
-```go
-err := sugar.Create("Excel.Application").
-    AutoRelease().      // Switch to automatic mode.
-    Put("Visible", true).
-    Err()               // Check for errors. Resources are released by the GC.
 ```
 
 ## Advanced Usage

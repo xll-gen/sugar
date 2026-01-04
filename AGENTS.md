@@ -40,7 +40,7 @@ There are three ways to start a chain, each with different ownership semantics:
 
 ### 2.3 Terminal Methods (Crucial for Resource Management)
 
-To prevent memory leaks, every chain of operations **must** end with one of the following terminal methods. These methods handle the release of all COM objects acquired *by the chain* during its operations (unless in `AutoRelease` mode).
+To prevent memory leaks, every chain of operations **must** end with one of the following terminal methods. These methods handle the release of all COM objects acquired *by the chain* during its operations.
 
 1.  **`Release()`**:
     - Releases all intermediate COM objects acquired by the chain.
@@ -66,22 +66,15 @@ err := Create("Excel.Application").Put("Visible", true).Release()
 Create("Excel.Application").Put("Visible", true)
 ```
 
-### 2.4 Resource Management Modes
+### 2.4 Resource Management
 
-1.  **Manual Mode (Default)**:
-    - The user **must** call a terminal method (`Release`, `Value`, `Err`) to free resources.
-    - Intermediate `IDispatch` objects returned by `Get` or `Call` are tracked in an internal `releaseChain` slice and released in reverse order of creation by the terminal method.
-
-2.  **Automatic Mode (`AutoRelease()`)**:
-    - This is an **opt-in** mode, enabled by calling `.AutoRelease()` on a chain.
-    - In this mode, the Go garbage collector is responsible for releasing `IDispatch` objects acquired during the chain via `runtime.SetFinalizer`.
-    - While a terminal method is not strictly required for resource cleanup in this mode, it is still best practice to use `Value()` or `Err()` to retrieve results and check for errors.
+The user **must** call a terminal method (`Release`, `Value`, `Err`) to free resources. Intermediate `IDispatch` objects returned by `Get` or `Call` are tracked in an internal `releaseChain` slice and released in reverse order of creation by the terminal method.
 
 ### 2.5 Storing Intermediate Objects (`Store()`)
 
 The `Store(target **ole.IDispatch)` method allows you to extract a COM object from the middle of a chain for later reuse.
 
-**OWNERSHIP RULE:** When an object is extracted via `Store`, **the user becomes responsible for calling `.Release()` on that object**, regardless of whether the chain is in manual or `AutoRelease` mode. The library removes the object from its internal resource management.
+**OWNERSHIP RULE:** When an object is extracted via `Store`, **the user becomes responsible for calling `.Release()` on that object**. The library removes the object from its internal resource management.
 
 ## 3. Development and Testing
 
