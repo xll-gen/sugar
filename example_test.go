@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
+	"github.com/xll-gen/sugar/expression"
 )
 
 // excelTestSetup is a helper to reduce boilerplate in examples.
@@ -199,4 +200,32 @@ func ExampleChain_StoreAutoRelease() {
 	val, _ := From(sheet).Get("Name").Value()
 	fmt.Printf("Stored sheet name: %v", val)
 	// Output: Stored sheet name: Sheet1
+}
+
+// This example demonstrates how to use the expression subpackage to interact
+// with a COM object using string expressions.
+func Example_expression() {
+	excel, cleanup := excelTestSetup()
+	if excel == nil {
+		return // Excel not available
+	}
+	defer cleanup()
+
+	// Ensure there is a workbook.
+	From(excel).Get("Workbooks").Call("Add").Release()
+
+	// Use expression.Put to set a cell's value.
+	err := expression.Put(excel, "ActiveSheet.Cells(1, 1).Value", "Hello from expression!")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Use expression.Get to retrieve the value.
+	val, err := expression.Get(excel, "ActiveSheet.Cells(1, 1).Value")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Cell A1 contains: %v", val)
+	// Output: Cell A1 contains: Hello from expression!
 }
