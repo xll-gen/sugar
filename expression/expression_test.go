@@ -164,10 +164,11 @@ func TestPut_Property(t *testing.T) {
 	defer cleanup()
 
 	// Add a workbook and select a cell
-	_, err := Get(disp, "Workbooks.Add()")
+	wb, err := Store(disp, "Workbooks.Add()")
 	if err != nil {
 		t.Fatalf("Failed to add workbook: %v", err)
 	}
+	wb.Release()
 
 	// Set value of A1 using Put
 	err = Put(disp, "ActiveCell.Value", "Hello")

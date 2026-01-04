@@ -175,9 +175,12 @@ func (c *Chain) Release() error {
 	// Also clear the last result if it holds a variant
 	if c.lastResult != nil {
 		c.lastResult.Clear()
+		c.lastResult = nil
 	}
 
-	return c.err
+	err := c.err
+	c.err = nil
+	return err
 }
 
 // IsDispatch returns true if the last result is a dispatch object.
@@ -190,14 +193,12 @@ func (c *Chain) IsDispatch() bool {
 // The returned value is the Go equivalent of the VARIANT result.
 func (c *Chain) Value() (interface{}, error) {
 	if c.err != nil {
-		// Release resources even if there was an error during the chain.
-		c.Release()
-		return nil, c.err
+		return nil, c.Release()
 	}
 
 	if c.lastResult == nil {
 		c.Release()
-		return nil, c.err // No value to return
+		return nil, nil
 	}
 
 	if c.lastResult.VT == ole.VT_DISPATCH {
@@ -210,10 +211,7 @@ func (c *Chain) Value() (interface{}, error) {
 	return val, err
 }
 
-// Err returns the first error that occurred during the chain. It ensures that
-// all intermediate resources are released, similar to Release().
+// Err returns the first error that occurred during the chain.
 func (c *Chain) Err() error {
-	// To prevent resource leaks, Err() must also release resources.
-	// The behavior is now consistent with Value() and Release().
-	return c.Release()
+	return c.err
 }

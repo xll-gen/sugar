@@ -1,0 +1,187 @@
+//go:build windows
+
+package sugar_test
+
+import (
+	"runtime"
+	"testing"
+
+	"github.com/go-ole/go-ole"
+	"github.com/xll-gen/sugar"
+)
+
+func initExcel(t *testing.T) (*ole.IDispatch, func()) {
+	t.Helper()
+	runtime.LockOSThread()
+	ole.CoInitialize(0)
+	
+	excel := sugar.Create("Excel.Application")
+	if err := excel.Err(); err != nil {
+		ole.CoUninitialize()
+		runtime.UnlockOSThread()
+		t.Skip("Excel not installed:", err)
+	}
+	
+	excel.Put("Visible", false)
+	disp, err := excel.Store()
+	if err != nil {
+		excel.Call("Quit").Release()
+		ole.CoUninitialize()
+		runtime.UnlockOSThread()
+		t.Fatalf("failed to create excel: %v", err)
+	}
+
+	cleanup := func() {
+		sugar.From(disp).Call("Quit").Release()
+		disp.Release()
+		ole.CoUninitialize()
+		runtime.UnlockOSThread()
+	}
+	return disp, cleanup
+}
+
+func TestChain_Properties(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	excel := sugar.From(disp)
+	
+	// Test Put and Get
+	err := excel.Put("Visible", false).Err()
+	if err != nil {
+		t.Errorf("failed to set Visible: %v", err)
+	}
+
+	val, err := excel.Get("Visible").Value()
+	if err != nil {
+		t.Errorf("failed to get Visible: %v", err)
+	}
+	if visible, ok := val.(bool); !ok || visible != false {
+		t.Errorf("expected Visible to be false, got %v", val)
+	}
+}
+
+func TestChain_Methods(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	excel := sugar.From(disp)
+
+	// Test nested Get and Call
+	// Workbooks returns IDispatch, so we MUST Store it or just Call on the chain without Value.
+	// Call("Add") returns a Workbook object.
+	wb, err := excel.Get("Workbooks").Call("Add").Store()
+	if err != nil {
+		t.Errorf("failed to add workbook: %v", err)
+	} else {
+		wb.Release()
+	}
+
+	// Re-acquire Workbooks to get Count
+	wbs, err := excel.Get("Workbooks").Store()
+	if err != nil {
+		t.Fatalf("failed to get Workbooks: %v", err)
+	}
+	defer wbs.Release()
+
+	count, err := sugar.From(wbs).Get("Count").Value()
+	if err != nil {
+		t.Errorf("failed to get workbooks count: %v", err)
+	}
+	
+	var countInt int
+	switch v := count.(type) {
+	case int32:
+		countInt = int(v)
+	case int64:
+		countInt = int(v)
+	case int:
+		countInt = v
+	default:
+		t.Fatalf("unexpected type for count: %T", count)
+	}
+
+	if countInt < 1 {
+		t.Errorf("expected at least 1 workbook, got %d", countInt)
+	}
+}
+
+func TestChain_Store(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	excel := sugar.From(disp)
+
+	// Test Store
+	wb, err := excel.Get("Workbooks").Call("Add").Store()
+	if err != nil {
+		t.Fatalf("failed to store workbook: %v", err)
+	}
+	defer wb.Release()
+
+	sheet, err := sugar.From(wb).Get("ActiveSheet").Store()
+	if err != nil {
+		t.Fatalf("failed to store sheet: %v", err)
+	}
+	defer sheet.Release()
+
+	// Use stored sheet
+	err = sugar.From(sheet).Get("Cells", 1, 1).Put("Value", "Sugar").Release()
+	if err != nil {
+		t.Errorf("failed to set cell value: %v", err)
+	}
+
+	val, err := sugar.From(sheet).Get("Cells", 1, 1).Get("Value").Value()
+	if err != nil {
+		t.Errorf("failed to get cell value: %v", err)
+	}
+	if val != "Sugar" {
+		t.Errorf("expected 'Sugar', got %v", val)
+	}
+}
+
+func TestChain_Errors(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	excel := sugar.From(disp)
+
+	// Test error propagation in chain
+	err := excel.Get("NonExistentProperty").Get("Another").Release()
+	if err == nil {
+		t.Error("expected error for non-existent property, got nil")
+	}
+}
+
+func TestChain_ValueRestrictions(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	excel := sugar.From(disp)
+
+	_, err := excel.Get("Workbooks").Value()
+	if err == nil {
+		t.Error("expected error when calling Value() on an IDispatch result, got nil")
+	}
+	expectedErr := "value cannot return IDispatch, use Store() instead"
+	if err != nil && err.Error() != expectedErr {
+		t.Errorf("expected error %q, got %q", expectedErr, err.Error())
+	}
+}
+
+func TestChain_IsDispatch(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	excel := sugar.From(disp)
+
+	isDisp := excel.Get("Workbooks").IsDispatch()
+	if !isDisp {
+		t.Error("expected IsDispatch() to be true for Workbooks")
+	}
+	
+	isDisp = excel.Get("Visible").IsDispatch()
+	if isDisp {
+		t.Error("expected IsDispatch() to be false for Visible (bool)")
+	}
+}

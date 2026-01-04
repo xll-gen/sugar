@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"testing"
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -107,3 +108,38 @@ func ExampleGetActive() {
 		fmt.Println("GetActive succeeded.")
 	}
 }
+
+func TestChain_Mock(t *testing.T) {
+	// These tests use a nil dispatch to test internal error handling and logic
+	// without requiring a real COM object.
+	
+	t.Run("Nil Dispatch Error", func(t *testing.T) {
+		c := sugar.From(nil)
+		err := c.Get("Prop").Err()
+		// Calling Get on nil dispatch should not crash but should eventually error 
+		// when oleutil is called, or handled gracefully.
+		// In our implementation, Get returns immediately if disp is nil.
+		if err != nil {
+			t.Errorf("expected nil error for nil dispatch check (skipped), got %v", err)
+		}
+	})
+
+	t.Run("Error Propagation", func(t *testing.T) {
+		c := sugar.From(nil)
+		// Manually set an error via a failed operation or just check initial state
+		if err := c.Err(); err != nil {
+			t.Errorf("initial error should be nil, got %v", err)
+		}
+	})
+	
+	t.Run("Create invalid ProgID", func(t *testing.T) {
+		ole.CoInitialize(0)
+		defer ole.CoUninitialize()
+		
+		c := sugar.Create("Invalid.ProgID.That.Does.Not.Exist")
+		if err := c.Err(); err == nil {
+			t.Error("expected error for invalid ProgID, got nil")
+		}
+	})
+}
+
