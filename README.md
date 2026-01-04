@@ -135,29 +135,42 @@ fmt.Printf("Active sheet name: %v", val)
 
 ### Storing and Reusing an Object
 
-Sometimes you need to get an object from the middle of a chain and use it multiple times. The `Store()` method allows you to do this.
+Sometimes you need to get an object from a chain and use it multiple times. The `Store()` method allows you to do this.
 
-When you use `Store()`, you take ownership of the object. You are responsible for calling `Release()` on it when you are done, regardless of whether the chain is in `AutoRelease` mode.
+`Store()` is a terminal method that ends the chain and transfers ownership of the *current* COM object to you. You are then responsible for calling `Release()` on it when you are done. Because it is a terminal method, you do not need to call `Release()` or `Err()` after it.
+
+A common pattern is to create and store the main application object first, and then use it to build new, independent chains.
 
 ```go
-var sheet *ole.IDispatch
+// Create the Excel application and store the object.
+excel, err := sugar.Create("Excel.Application").Store()
+if err != nil {
+    log.Fatalf("Failed to create Excel object: %v", err)
+}
+// IMPORTANT: You are now responsible for releasing the object.
+defer excel.Release()
 
-err := sugar.Create("Excel.Application").
+// Now you can use 'excel' to start multiple chains.
+// Make Excel visible and add a workbook.
+err = sugar.From(excel).
+    Put("Visible", true).
     Get("Workbooks").
     Call("Add").
-    Get("ActiveSheet").
-    Store(&sheet). // Store the IDispatch for the worksheet.
-    Release()      // Terminate the chain.
+    Release() // Terminate this chain.
 
 if err != nil {
     log.Fatal(err)
 }
 
-// Now you can use 'sheet' in new chains.
-defer sheet.Release() // IMPORTANT: You must release it yourself.
+// Get the active sheet and write some values to it.
+sheet, err := sugar.From(excel).Get("ActiveSheet").Store()
+if err != nil {
+    log.Fatal(err)
+}
+defer sheet.Release() // You also own this object now.
 
-sugar.From(sheet).Put("Cells", 1, 1, "Hello").Release()
-sugar.From(sheet).Put("Cells", 1, 2, "World").Release()
+sugar.From(sheet).Get("Cells", 1, 1).Put("Value", "Hello").Release()
+sugar.From(sheet).Get("Cells", 1, 2).Put("Value", "World").Release()
 ```
 
 ## Expression-Based Automation
