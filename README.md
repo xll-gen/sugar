@@ -164,9 +164,52 @@ sugar.From(sheet).Put("Cells", 1, 2, "World").Release()
 
 The `expression` subpackage provides a powerful way to interact with COM objects using simple string expressions, which is ideal for simplifying complex or deeply nested operations.
 
-Here is a complete example of how to use it with Excel:
+Here is a complete example of how to use it with Excel. This code will create a new Excel instance, add a workbook, write a value to a cell using `expression.Put`, and read it back using `expression.Get`.
 
-[embed:example_test.go-Example_expression]
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/go-ole/go-ole"
+	"github.com/xll-gen/sugar"
+	"github.com/xll-gen/sugar/expression"
+)
+
+func main() {
+	// Initialize COM for the current goroutine.
+	ole.CoInitialize(0)
+	defer ole.CoUninitialize()
+
+	// Create a new Excel application instance.
+	excel, err := sugar.Create("Excel.Application").Store()
+	if err != nil {
+		log.Fatalf("Failed to create Excel object: %v", err)
+	}
+	// Ensure the Excel process is quit when we are done.
+	defer excel.Release()
+	defer sugar.From(excel).Call("Quit").Release()
+
+	// Ensure there is a workbook.
+	sugar.From(excel).Get("Workbooks").Call("Add").Release()
+
+	// Use expression.Put to set a cell's value.
+	err = expression.Put(excel, "ActiveSheet.Cells(1, 1).Value", "Hello from expression!")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Use expression.Get to retrieve the value.
+	val, err := expression.Get(excel, "ActiveSheet.Cells(1, 1).Value")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Cell A1 contains: %v", val)
+}
+```
 
 ## License
 
