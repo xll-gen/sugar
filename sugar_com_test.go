@@ -170,8 +170,61 @@ func TestChain_IsDispatch(t *testing.T) {
 	}
 	
 	excel = sugar.From(disp)
-	isDisp = excel.Get("Visible").IsDispatch()
-	if isDisp {
-		t.Error("expected IsDispatch() to be false for Visible (bool)")
+		isDisp = excel.Get("Visible").IsDispatch()
+		if isDisp {
+			t.Error("expected IsDispatch() to be false for Visible (bool)")
+		}
 	}
-}
+	
+	func TestChain_ForEach(t *testing.T) {
+		disp, cleanup := initExcel(t)
+		defer cleanup()
+	
+		// Get Workbooks collection safely
+		wbs, err := sugar.From(disp).Get("Workbooks").Store()
+		if err != nil {
+			t.Fatalf("failed to get Workbooks: %v", err)
+		}
+		defer wbs.Release()
+	
+		// Add 2 workbooks
+		for i := 0; i < 2; i++ {
+			// Call Add on Workbooks collection
+			wb, err := sugar.From(wbs).Call("Add").Store()
+			if err != nil {
+				t.Fatalf("failed to add workbook %d: %v", i, err)
+			}
+			wb.Release()
+		}
+	
+		// 1. Count workbooks
+		count := 0
+		err = sugar.From(wbs).ForEach(func(item *sugar.Chain) bool {
+			count++
+			return true
+		}).Err()
+	
+		if err != nil {
+			t.Fatalf("ForEach failed: %v", err)
+		}
+		// Note: Excel starts with 0 or 1 workbook depending on settings/version, 
+		// plus we added 2. So count should be at least 2.
+		if count < 2 {
+			t.Errorf("expected at least 2 workbooks, counted %d", count)
+		}
+	
+		// 2. Test early exit
+		count = 0
+		err = sugar.From(wbs).ForEach(func(item *sugar.Chain) bool {
+			count++
+			return false // Stop after first item
+		}).Err()
+	
+		if err != nil {
+			t.Fatalf("ForEach with early exit failed: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("expected count to be 1 after early exit, got %d", count)
+		}
+	}
+	

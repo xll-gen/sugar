@@ -4,6 +4,7 @@ package sugar
 
 import (
 	"errors"
+	"unsafe"
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -127,6 +128,97 @@ func (c *Chain) Put(prop string, params ...interface{}) *Chain {
 	if c.lastResult != nil {
 		c.lastResult.Clear()
 		c.lastResult = nil
+	}
+
+	return c
+}
+
+// ForEach iterates over a collection. The current object in the chain must be
+// a collection that supports the _NewEnum property. The callback function is
+// executed for each item in the collection. The item is passed as a new Chain.
+// If the callback returns false, the iteration stops.
+//
+// Note: This method only supports collections of objects (IDispatch). Items
+// that are not objects are skipped.
+func (c *Chain) ForEach(callback func(item *Chain) bool) *Chain {
+	if c.err != nil || c.disp == nil {
+		return c
+	}
+
+	// Get _NewEnum property
+	// -4 is the standard DISPID for _NewEnum
+	enumVar, err := oleutil.GetProperty(c.disp, "_NewEnum")
+	if err != nil {
+		c.err = err
+		return c
+	}
+	defer enumVar.Clear()
+
+	// Get IEnumVARIANT interface
+	if enumVar.VT != ole.VT_UNKNOWN && enumVar.VT != ole.VT_DISPATCH {
+		c.err = errors.New("property _NewEnum is not an object")
+		return c
+	}
+	
+	// IID_IEnumVARIANT
+	unknown := enumVar.ToIUnknown()
+	if unknown == nil {
+		c.err = errors.New("_NewEnum returned nil IUnknown")
+		return c
+	}
+
+	// IID_IEnumVARIANT
+	iid, err := ole.IIDFromString("{00020404-0000-0000-C000-000000000046}")
+	if err != nil {
+		c.err = err
+		return c
+	}
+
+	enumRaw, err := unknown.QueryInterface(iid)
+	if err != nil {
+		c.err = err
+		return c
+	}
+	defer enumRaw.Release()
+
+	enum := (*ole.IEnumVARIANT)(unsafe.Pointer(enumRaw))
+
+	// Iterate
+	for {
+		// Next returns (VARIANT, uint, error) in some go-ole versions
+		itemVar, fetched, err := enum.Next(1)
+		if err != nil || fetched == 0 {
+			break
+		}
+		
+		if itemVar.VT == ole.VT_DISPATCH {
+			// Create a new Chain for the item
+			itemDisp := itemVar.ToIDispatch()
+			// ToIDispatch does not AddRef, but Next() implementation does AddRef on the variant content?
+			// Yes, VariantClear (called by itemVar.Clear()) releases it.
+			// So for the Chain, we should probably AddRef if we want the Chain to manage it independently,
+			// OR we rely on the fact that we will clear itemVar after callback.
+			// The Chain implementation assumes it owns the objects in releaseChain.
+			// Let's AddRef for the Chain to be safe and consistent with other methods.
+			itemDisp.AddRef()
+			
+			itemChain := &Chain{
+				disp:         itemDisp,
+				releaseChain: []*ole.IDispatch{itemDisp},
+			}
+
+			cont := callback(itemChain)
+			
+			// Release the chain created for the item. This cleans up the AddRef we just did.
+			itemChain.Release()
+			
+			if !cont {
+				itemVar.Clear()
+				break
+			}
+		}
+		
+		itemVar.Clear()
 	}
 
 	return c
