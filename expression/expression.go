@@ -4,26 +4,28 @@ package expression
 
 import (
 	"fmt"
+
 	"github.com/expr-lang/expr/ast"
 	"github.com/expr-lang/expr/parser"
 	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
 )
 
-// evaluate parses and evaluates the expression, returning the raw result.
+// evaluate parses and evaluates the expression within the context of the object.
+// It returns the raw result (usually a *sugar.Chain for objects).
 func evaluate(obj interface{}, expression string) (interface{}, error) {
 	var chain *sugar.Chain
 	switch v := obj.(type) {
 	case *sugar.Chain:
 		chain = v
 	case *ole.IDispatch:
+		// Note: Creating a chain from IDispatch without a context means 
+		// it won't be auto-tracked unless the caller manages it.
+		// However, inside sugar.Do, the user should ideally pass a *sugar.Chain.
 		chain = sugar.From(v)
 	default:
 		return nil, fmt.Errorf("unsupported type for evaluate: %T", obj)
 	}
-
-	// We do not check chain.Err() here because it would release the chain.
-	// We rely on the chain to carry the error.
 
 	tree, err := parser.Parse(expression)
 	if err != nil {
@@ -34,33 +36,29 @@ func evaluate(obj interface{}, expression string) (interface{}, error) {
 	return visitor.eval(tree.Node)
 }
 
-// Get retrieves a property or calls a method on a COM object using an expression.
-// It returns the value of the property or method result.
-// If the result is a COM object (IDispatch), this function will return an error.
-// Use Store() to retrieve COM objects.
+// Get retrieves a property or calls a method using an expression.
+// It returns the Go value of the result. If the result is a COM object,
+// it returns an error (use Store or just use the expression to navigate).
 func Get(obj interface{}, expression string) (interface{}, error) {
 	result, err := evaluate(obj, expression)
 	if err != nil {
 		return nil, err
 	}
 
-	if result == nil {
-		return nil, nil
-	}
-
 	if finalChain, ok := result.(*sugar.Chain); ok {
-		if finalChain.Err() != nil {
-			return nil, finalChain.Err()
+		if err := finalChain.Err(); err != nil {
+			return nil, err
 		}
-		// Directly call Value(). If it's an IDispatch, Value() will error.
+		// Returns the Go value. For IDispatch, this will return an error.
 		return finalChain.Value()
 	}
 
 	return result, nil
 }
 
-// Store retrieves a COM object (IDispatch) using an expression and transfers ownership to the caller.
-// The caller is responsible for releasing the returned object.
+// Store is kept for compatibility but in the Context/Arena model, 
+// you can often just use the Chain returned by evaluate-like operations.
+// It returns the raw *ole.IDispatch with an increased reference count.
 func Store(obj interface{}, expression string) (*ole.IDispatch, error) {
 	result, err := evaluate(obj, expression)
 	if err != nil {
@@ -68,8 +66,8 @@ func Store(obj interface{}, expression string) (*ole.IDispatch, error) {
 	}
 
 	if finalChain, ok := result.(*sugar.Chain); ok {
-		if finalChain.Err() != nil {
-			return nil, finalChain.Err()
+		if err := finalChain.Err(); err != nil {
+			return nil, err
 		}
 		return finalChain.Store()
 	}
@@ -82,8 +80,6 @@ type comVisitor struct {
 }
 
 func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
-	// Do not check v.initialChain.Err() here.
-
 	switch n := node.(type) {
 	case *ast.IdentifierNode:
 		return v.initialChain.Get(n.Value), nil
@@ -95,7 +91,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		}
 		chain, ok := left.(*sugar.Chain)
 		if !ok {
-			return nil, fmt.Errorf("cannot access property on a non-COM object type: %T", left)
+			return nil, fmt.Errorf("cannot access property on type %T", left)
 		}
 		
 		propName := ""
@@ -104,7 +100,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		} else if id, ok := n.Property.(*ast.IdentifierNode); ok {
 			propName = id.Value
 		} else {
-			return nil, fmt.Errorf("unsupported property node type: %T", n.Property)
+			return nil, fmt.Errorf("unsupported property node: %T", n.Property)
 		}
 		return chain.Get(propName), nil
 
@@ -115,10 +111,11 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
+			// If argument is a chain, get its value
 			if argChain, ok := argVal.(*sugar.Chain); ok {
 				val, err := argChain.Value()
 				if err != nil {
-					return nil, fmt.Errorf("error evaluating argument %d: %w", i, err)
+					return nil, fmt.Errorf("arg %d error: %w", i, err)
 				}
 				args[i] = val
 			} else {
@@ -134,7 +131,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			}
 			chain, ok := obj.(*sugar.Chain)
 			if !ok {
-				return nil, fmt.Errorf("cannot call method on a non-COM object type: %T", obj)
+				return nil, fmt.Errorf("cannot call method on type %T", obj)
 			}
 			
 			methodName := ""
@@ -142,39 +139,26 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 				methodName = id.Value
 			} else if id, ok := callee.Property.(*ast.IdentifierNode); ok {
 				methodName = id.Value
-			} else {
-				return nil, fmt.Errorf("unsupported method property node type: %T", callee.Property)
 			}
-
-			// Use Call for methods
 			return chain.Call(methodName, args...), nil
 
 		case *ast.IdentifierNode:
 			return v.initialChain.Call(callee.Value, args...), nil
 		default:
-			return nil, fmt.Errorf("unsupported call on type: %T", callee)
+			return nil, fmt.Errorf("unsupported call on %T", callee)
 		}
 
-	case *ast.IntegerNode:
-		return n.Value, nil
-	case *ast.StringNode:
-		return n.Value, nil
-	case *ast.BoolNode:
-		return n.Value, nil
-	case *ast.FloatNode:
-		return n.Value, nil
-	case *ast.NilNode:
-		return nil, nil
-
+	case *ast.IntegerNode: return n.Value, nil
+	case *ast.StringNode:  return n.Value, nil
+	case *ast.BoolNode:    return n.Value, nil
+	case *ast.FloatNode:   return n.Value, nil
+	case *ast.NilNode:     return nil, nil
 	default:
-		return nil, fmt.Errorf("unsupported expression node type: %T", n)
+		return nil, fmt.Errorf("unsupported node: %T", n)
 	}
 }
 
-// Put sets a property on a COM object using an expression.
-// obj can be a *sugar.Chain or *ole.IDispatch.
-// expression is a dot-separated property path like "ActiveCell.Value".
-// value is the value to assign to the property.
+// Put sets a property using an expression.
 func Put(obj interface{}, expression string, value interface{}) error {
 	var chain *sugar.Chain
 	switch v := obj.(type) {
@@ -186,8 +170,6 @@ func Put(obj interface{}, expression string, value interface{}) error {
 		return fmt.Errorf("unsupported type for Put: %T", obj)
 	}
 
-	// Do not check chain.Err() here.
-
 	tree, err := parser.Parse(expression)
 	if err != nil {
 		return err
@@ -195,29 +177,25 @@ func Put(obj interface{}, expression string, value interface{}) error {
 
 	memberNode, ok := tree.Node.(*ast.MemberNode)
 	if !ok {
-		return fmt.Errorf("invalid expression for Put: must be a property access, e.g., 'Application.Version'")
+		return fmt.Errorf("invalid Put expression: must be property access")
 	}
 
-	// Evaluate the object part of the expression (e.g., 'Application' in 'Application.Version')
 	visitor := &comVisitor{initialChain: chain}
 	parentObj, err := visitor.eval(memberNode.Node)
 	if err != nil {
-		return fmt.Errorf("could not retrieve parent object: %w", err)
+		return err
 	}
 
 	parentChain, ok := parentObj.(*sugar.Chain)
 	if !ok {
-		return fmt.Errorf("parent path did not resolve to a COM object, but to %T", parentObj)
+		return fmt.Errorf("parent is not COM object: %T", parentObj)
 	}
 
-	// Now, call Put on the parent object with the final property name.
 	propName := ""
 	if id, ok := memberNode.Property.(*ast.StringNode); ok {
 		propName = id.Value
 	} else if id, ok := memberNode.Property.(*ast.IdentifierNode); ok {
 		propName = id.Value
-	} else {
-		return fmt.Errorf("unsupported property node type for Put: %T", memberNode.Property)
 	}
 
 	return parentChain.Put(propName, value).Err()
