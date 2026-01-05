@@ -22,7 +22,7 @@ func With(ctx context.Context) *Runner {
 
 // Do executes the provided function in the current goroutine.
 // It ensures proper COM initialization and thread locking only if not already initialized.
-func (r *Runner) Do(fn func(ctx *Context)) (err error) {
+func (r *Runner) Do(fn func(ctx *Context) error) (err error) {
 	if r.parent == nil {
 		r.parent = context.Background()
 	}
@@ -51,13 +51,12 @@ func (r *Runner) Do(fn func(ctx *Context)) (err error) {
 		}
 	}()
 
-	fn(ctx)
-	return nil
+	return fn(ctx)
 }
 
 // Go executes the provided function in a new goroutine.
 // It always performs full initialization as it's a new thread.
-func (r *Runner) Go(fn func(ctx *Context)) {
+func (r *Runner) Go(fn func(ctx *Context) error) {
 	go func() {
 		// Create a new runner that forces initialization for the new goroutine
 		runner := &Runner{
@@ -69,11 +68,11 @@ func (r *Runner) Go(fn func(ctx *Context)) {
 }
 
 // Do executes the provided function with a Background context.
-func Do(fn func(ctx *Context)) error {
+func Do(fn func(ctx *Context) error) error {
 	return With(context.Background()).Do(fn)
 }
 
 // Go executes the provided function in a new goroutine with a Background context.
-func Go(fn func(ctx *Context)) {
+func Go(fn func(ctx *Context) error) {
 	With(context.Background()).Go(fn)
 }

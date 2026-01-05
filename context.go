@@ -66,11 +66,19 @@ func (c *Context) Release() error {
 }
 
 // Do executes the provided function within a nested scope of this context.
-func (c *Context) Do(fn func(ctx *Context)) error {
+
+func (c *Context) Do(fn func(ctx *Context) error) error {
+
 	return With(c).Do(fn)
+
 }
 
+
+
 // Go executes the provided function in a new goroutine, branching from this context.
-func (c *Context) Go(fn func(ctx *Context)) {
+
+func (c *Context) Go(fn func(ctx *Context) error) {
+
 	With(c).Go(fn)
+
 }

@@ -18,30 +18,14 @@ func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
 		return nil
 	}
 	
-	// Ensure Excel quits. We use defer within the Do function scope.
-	// Since this helper is called inside Do, the caller should defer the Quit 
-	// or we rely on the caller to do it. 
-	// But defer here executes when setupExcel returns, which is TOO EARLY.
-	// So we can't defer Quit here.
-	// We return the chain and let the caller handle Quit, OR we attach a cleanup to t (but t.Cleanup runs after Do returns?).
-	// t.Cleanup runs after the test function returns. If Do blocks, t.Cleanup runs after Do.
-	// So t.Cleanup is a safe place to Quit?
-	// No, because by then ctx might be released (Do returns -> ctx.Release -> t.Cleanup).
-	// If ctx releases the object, we can't call Quit on it properly?
-	// Actually, if we release the object, we can't call methods.
-	// So Quit MUST happen before ctx.Release.
-	// Therefore, Quit must be deferred inside the Do callback.
-	
-	// We'll require callers to defer Quit.
-	
 	excel.Put("Visible", false)
 	return excel
 }
 
 func TestChain_Properties(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		
 		// Ensure Quit
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -59,13 +43,14 @@ func TestChain_Properties(t *testing.T) {
 		if visible, ok := val.(bool); !ok || visible != false {
 			t.Errorf("expected Visible to be false, got %v", val)
 		}
+		return nil
 	})
 }
 
 func TestChain_Methods(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Test nested Get and Call
@@ -101,21 +86,17 @@ func TestChain_Methods(t *testing.T) {
 		if countInt < 1 {
 			t.Errorf("expected at least 1 workbook, got %d", countInt)
 		}
+		return nil
 	})
 }
 
 func TestChain_Store(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Test Store (manual management mixed with context)
-		// Store removes the object from Context management (if we implemented Detach, 
-		// but currently Store just returns a new reference. Wait, does Store detach?)
-		// Checking sugar.go: Store returns AddRef'd disp. It doesn't detach the Chain from Context.
-		// So ctx will release its copy, user must release their copy.
-		
 		wbDisp, err := excel.Get("Workbooks").Call("Add").Store()
 		if err != nil {
 			t.Fatalf("failed to store workbook: %v", err)
@@ -143,13 +124,14 @@ func TestChain_Store(t *testing.T) {
 		if val != "Sugar" {
 			t.Errorf("expected 'Sugar', got %v", val)
 		}
+		return nil
 	})
 }
 
 func TestChain_Errors(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Test error propagation in chain
@@ -157,13 +139,14 @@ func TestChain_Errors(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for non-existent property, got nil")
 		}
+		return nil
 	})
 }
 
 func TestChain_ValueRestrictions(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		_, err := excel.Get("Workbooks").Value()
@@ -174,13 +157,14 @@ func TestChain_ValueRestrictions(t *testing.T) {
 		if err != nil && err.Error() != expectedErr {
 			t.Errorf("expected error %q, got %q", expectedErr, err.Error())
 		}
+		return nil
 	})
 }
 
 func TestChain_IsDispatch(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		isDisp := excel.Get("Workbooks").IsDispatch()
@@ -193,13 +177,14 @@ func TestChain_IsDispatch(t *testing.T) {
 		if isDisp {
 			t.Error("expected IsDispatch() to be false for Visible (bool)")
 		}
+		return nil
 	})
 }
 
 func TestChain_ForEach(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		wbs := excel.Get("Workbooks")
@@ -236,13 +221,14 @@ func TestChain_ForEach(t *testing.T) {
 		if count != 1 {
 			t.Errorf("expected count to be 1 after early exit, got %d", count)
 		}
+		return nil
 	})
 }
 
 func TestChain_Fork(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// 1. Create a workbook and Fork (which is just explicit clone now)
@@ -259,5 +245,6 @@ func TestChain_Fork(t *testing.T) {
 		}
 		
 		// 3. No manual Release needed (handled by ctx)
+		return nil
 	})
 }

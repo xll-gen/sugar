@@ -20,9 +20,9 @@ func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
 }
 
 func TestGet_Property(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Test with *sugar.Chain (using context-tracked chain)
@@ -39,13 +39,6 @@ func TestGet_Property(t *testing.T) {
 		t.Logf("Excel version (from *sugar.Chain): %v", version)
 
 		// Test with *ole.IDispatch
-		// Since we want to test Get(disp), we need a raw disp.
-		// We can use Store() to get one, or just use reflection hacks, 
-		// but standard way is to just pass a Chain if we have one.
-		// To test IDispatch branch, we need to extract it.
-		// But Store() detaches it from context? No, Store() returns AddRef'd copy.
-		// So we can use Store() to get a disp to test with.
-		
 		disp, err := excel.Store()
 		if err != nil {
 			t.Fatalf("Failed to get raw dispatch: %v", err)
@@ -63,13 +56,14 @@ func TestGet_Property(t *testing.T) {
 			t.Errorf("Expected a version string from IDispatch, got %v", version)
 		}
 		t.Logf("Excel version (from *ole.IDispatch): %v", version)
+		return nil
 	})
 }
 
 func TestGet_MethodCall(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Add a new workbook
@@ -81,8 +75,6 @@ func TestGet_MethodCall(t *testing.T) {
 		defer workbooks.Release()
 
 		// Call Add. Add returns a Workbook object.
-		// Since we are discarding the result (underscore), we can use Get or Store?
-		// But Get errors on objects. So we must use Store.
 		wb, err := Store(workbooks, "Add()")
 		if err != nil {
 			t.Fatalf("Failed to call Workbooks.Add(): %v", err)
@@ -111,13 +103,14 @@ func TestGet_MethodCall(t *testing.T) {
 		if countInt < 1 {
 			t.Errorf("Expected at least 1 workbook, got %v", count)
 		}
+		return nil
 	})
 }
 
 func TestGet_MethodCallWithArgs(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Add a workbook to ensure we have a context where evaluation works properly
@@ -128,19 +121,19 @@ func TestGet_MethodCallWithArgs(t *testing.T) {
 		wb.Release()
 
 		// Use Application.Evaluate("A1") to test passing string arguments to a method.
-		// Evaluate returns a Range object, so we must use Store.
 		rng, err := Store(excel, "Evaluate('A1')")
 		if err != nil {
 			t.Fatalf("Failed to call Evaluate('A1'): %v", err)
 		}
 		rng.Release()
+		return nil
 	})
 }
 
 func TestPut_Property(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Add a workbook and select a cell
@@ -164,13 +157,14 @@ func TestPut_Property(t *testing.T) {
 		if value != "Hello" {
 			t.Errorf("Expected ActiveCell.Value to be 'Hello', got '%v'", value)
 		}
+		return nil
 	})
 }
 
 func TestErrorHandling(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) {
+	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
-		if excel == nil { return }
+		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		// Test invalid property access
@@ -190,5 +184,6 @@ func TestErrorHandling(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for using a method call in Put, got nil")
 		}
+		return nil
 	})
 }
