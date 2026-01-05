@@ -4,6 +4,7 @@ package sugar_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/xll-gen/sugar"
@@ -56,6 +57,42 @@ func TestContext_NestedDo(t *testing.T) {
 	if err != nil {
 		t.Errorf("outer Do returned error: %v (type %T)", err, err)
 	}
+}
+
+func TestContext_AsyncGo(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Outer Do
+	sugar.Do(func(ctx *sugar.Context) {
+		excel := ctx.Create("Excel.Application")
+		if err := excel.Err(); err != nil {
+			t.Skip("Excel not available")
+			wg.Done()
+			return
+		}
+		defer excel.Call("Quit")
+
+		// Start an async task using Go
+		ctx.Go(func(asyncCtx *sugar.Context) {
+			defer wg.Done()
+			
+			// This is on a NEW thread. Initialization should be forced.
+			// We can access 'excel' because COM allows inter-thread calls if marshaled, 
+			// but go-ole/sugar doesn't do auto-marshaling. 
+			// However, simple objects might work or we can create a new object.
+			
+			// Let's create a new object in the new thread to be safe.
+			asyncExcel := asyncCtx.Create("Excel.Application")
+			if err := asyncExcel.Err(); err != nil {
+				t.Errorf("Async Excel creation failed: %v", err)
+				return
+			}
+			asyncExcel.Call("Quit")
+		})
+	})
+
+	wg.Wait()
 }
 
 func TestContext_WithCancel(t *testing.T) {

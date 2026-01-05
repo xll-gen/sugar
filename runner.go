@@ -11,7 +11,8 @@ import (
 
 // Runner configures the execution environment for COM operations.
 type Runner struct {
-	parent context.Context
+	parent    context.Context
+	forceInit bool
 }
 
 // With returns a new Runner with the specified parent context.
@@ -21,14 +22,13 @@ func With(ctx context.Context) *Runner {
 
 // Do executes the provided function in the current goroutine.
 // It ensures proper COM initialization and thread locking only if not already initialized.
-// A new sugar.Context (arena) is created for this scope.
 func (r *Runner) Do(fn func(ctx *Context)) (err error) {
 	if r.parent == nil {
 		r.parent = context.Background()
 	}
 
-	// Check if we are already inside a sugar.Do block on this call stack/context
-	isNested := r.parent.Value(activeSugarKey) != nil
+	// Only skip initialization if we are NOT forced and already inside a sugar.Do block
+	isNested := !r.forceInit && r.parent.Value(activeSugarKey) != nil
 
 	if !isNested {
 		runtime.LockOSThread()
@@ -59,9 +59,12 @@ func (r *Runner) Do(fn func(ctx *Context)) (err error) {
 // It always performs full initialization as it's a new thread.
 func (r *Runner) Go(fn func(ctx *Context)) {
 	go func() {
-		// New goroutine always starts fresh, ignoring parent's isNested status 
-		// but using the parent context for cancellation/values.
-		_ = With(r.parent).Do(fn)
+		// Create a new runner that forces initialization for the new goroutine
+		runner := &Runner{
+			parent:    r.parent,
+			forceInit: true,
+		}
+		_ = runner.Do(fn)
 	}()
 }
 
