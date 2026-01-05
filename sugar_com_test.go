@@ -152,7 +152,7 @@ func TestChain_ValueRestrictions(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when calling Value() on an IDispatch result, got nil")
 	}
-	expectedErr := "value cannot return IDispatch, use Store() instead"
+	expectedErr := "result is IDispatch, use Store"
 	if err != nil && err.Error() != expectedErr {
 		t.Errorf("expected error %q, got %q", expectedErr, err.Error())
 	}

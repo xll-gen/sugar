@@ -116,11 +116,9 @@ func TestChain_Mock(t *testing.T) {
 	t.Run("Nil Dispatch Error", func(t *testing.T) {
 		c := sugar.From(nil)
 		err := c.Get("Prop").Err()
-		// Calling Get on nil dispatch should not crash but should eventually error 
-		// when oleutil is called, or handled gracefully.
-		// In our implementation, Get returns immediately if disp is nil.
-		if err != nil {
-			t.Errorf("expected nil error for nil dispatch check (skipped), got %v", err)
+		// Calling Get on nil dispatch should return an error.
+		if err == nil {
+			t.Error("expected error for nil dispatch, got nil")
 		}
 	})
 

@@ -32,6 +32,7 @@ func NewContext() *Context {
 // Returns the passed chain for fluent usage.
 // Example: newChain := ctx.Track(oldChain.Fork())
 func (c *Context) Track(chain *Chain) *Chain {
+	chain.ctx = c
 	c.chains = append(c.chains, chain)
 	return chain
 }

@@ -11,25 +11,27 @@ import (
 )
 
 // Chain provides a fluent interface for chaining OLE operations.
+// It uses an immutable pattern: methods like Get and Call return a NEW Chain instance,
+// leaving the original Chain unmodified.
 type Chain struct {
-	disp         *ole.IDispatch
-	err          error
-	lastResult   *ole.VARIANT
-	releaseChain []*ole.IDispatch
+	disp       *ole.IDispatch
+	err        error
+	lastResult *ole.VARIANT
+	ctx        *Context // Optional context for automatic resource tracking
 }
 
-// From starts a new chain with the given IDispatch. The user is responsible
-// for releasing the initial dispatch object.
+// From starts a new chain with the given IDispatch.
+// If used without a Context, the caller is responsible for releasing the chain.
 func From(disp *ole.IDispatch) *Chain {
+	if disp != nil {
+		disp.AddRef()
+	}
 	return &Chain{
 		disp: disp,
 	}
 }
 
-// Create starts a new chain by creating a new COM object from the given
-// ProgID. The user is responsible for calling ole.CoInitialize and
-// ole.CoUninitialize. The chain takes ownership of the created object and
-// will release it when a terminal method (Release, Value, Err) is called.
+// Create starts a new chain by creating a new COM object from the given ProgID.
 func Create(progID string) *Chain {
 	unknown, err := oleutil.CreateObject(progID)
 	if err != nil {
@@ -37,23 +39,17 @@ func Create(progID string) *Chain {
 	}
 
 	disp, err := unknown.QueryInterface(ole.IID_IDispatch)
+	unknown.Release()
 	if err != nil {
-		unknown.Release()
 		return &Chain{err: err}
 	}
-	unknown.Release()
 
-	// The chain is responsible for releasing the created object.
 	return &Chain{
-		disp:         disp,
-		releaseChain: []*ole.IDispatch{disp},
+		disp: disp,
 	}
 }
 
-// GetActive starts a new chain by attaching to a running COM object from the
-// given ProgID. The user is responsible for calling ole.CoInitialize and
-// ole.CoUninitialize. The chain takes ownership of the object and will
-// release it when a terminal method (Release, Value, Err) is called.
+// GetActive starts a new chain by attaching to a running COM object.
 func GetActive(progID string) *Chain {
 	unknown, err := oleutil.GetActiveObject(progID)
 	if err != nil {
@@ -61,60 +57,78 @@ func GetActive(progID string) *Chain {
 	}
 
 	disp, err := unknown.QueryInterface(ole.IID_IDispatch)
+	unknown.Release()
 	if err != nil {
-		unknown.Release()
 		return &Chain{err: err}
 	}
-	unknown.Release()
 
-	// The chain is responsible for releasing the object.
 	return &Chain{
-		disp:         disp,
-		releaseChain: []*ole.IDispatch{disp},
+		disp: disp,
 	}
 }
 
-// handleResult is a helper function to process the result of GetProperty and CallMethod.
+// handleResult processes the result of GetProperty and CallMethod.
+// It returns a NEW Chain instance if the result is a dispatch object.
 func (c *Chain) handleResult(result *ole.VARIANT, err error) *Chain {
 	if err != nil {
-		c.err = err
-		return c
+		return &Chain{err: err, ctx: c.ctx}
 	}
 
-	if c.lastResult != nil {
-		c.lastResult.Clear()
+	// Create a new chain for the result
+	newChain := &Chain{
+		disp:       c.disp, // Default to current disp if result is not object
+		lastResult: result,
+		ctx:        c.ctx,
 	}
-	c.lastResult = result
 
 	if result.VT == ole.VT_DISPATCH {
 		newDisp := result.ToIDispatch()
-		newDisp.AddRef()
-		c.releaseChain = append(c.releaseChain, newDisp)
-		c.disp = newDisp
-	}
+		newDisp.AddRef() // AddRef because the new chain owns this reference
+		newChain.disp = newDisp
+		
+		// Auto-track if context is present
+		if c.ctx != nil {
+			c.ctx.Track(newChain)
+		}
+	} else if result.VT == ole.VT_UNKNOWN {
+        // Handle IUnknown if returned (rare but possible)
+        // For now, treat as non-dispatch or error?
+        // Let's stick to IDispatch support.
+    }
 
-	return c
+	return newChain
 }
 
-// Get is a wrapper for oleutil.GetProperty.
+// Get retrieves a property and returns a NEW Chain.
+// The original chain is unaffected.
 func (c *Chain) Get(prop string, params ...interface{}) *Chain {
-	if c.err != nil || c.disp == nil {
-		return c
+	if c.err != nil {
+		return &Chain{err: c.err, ctx: c.ctx}
+	}
+	if c.disp == nil {
+		return &Chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
 	result, err := oleutil.GetProperty(c.disp, prop, params...)
 	return c.handleResult(result, err)
 }
 
-// Call is a wrapper for oleutil.CallMethod.
+// Call executes a method and returns a NEW Chain.
+// The original chain is unaffected.
 func (c *Chain) Call(method string, params ...interface{}) *Chain {
-	if c.err != nil || c.disp == nil {
-		return c
+	if c.err != nil {
+		return &Chain{err: c.err, ctx: c.ctx}
+	}
+	if c.disp == nil {
+		return &Chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
 	result, err := oleutil.CallMethod(c.disp, method, params...)
 	return c.handleResult(result, err)
 }
 
-// Put is a wrapper for oleutil.PutProperty.
+// Put sets a property.
+// Unlike Get/Call, Put is typically a terminal operation or returns the SAME chain
+// because it doesn't produce a new object to traverse.
+// However, to maintain consistency, we return 'c' (self).
 func (c *Chain) Put(prop string, params ...interface{}) *Chain {
 	if c.err != nil || c.disp == nil {
 		return c
@@ -122,211 +136,164 @@ func (c *Chain) Put(prop string, params ...interface{}) *Chain {
 
 	_, err := oleutil.PutProperty(c.disp, prop, params...)
 	if err != nil {
-		c.err = err
+		// Return a new chain with error, or modify self?
+		// Since Put is a side-effect, modifying self's error state is acceptable,
+		// OR we return a new chain with error.
+		// Let's return a new chain with error to be safe with immutability,
+		// although the user might ignore the return value.
+		return &Chain{err: err, ctx: c.ctx, disp: c.disp}
 	}
-	// PutProperty returns no result to store.
-	if c.lastResult != nil {
-		c.lastResult.Clear()
-		c.lastResult = nil
-	}
-
+	
+	// Put doesn't return a value, so we clear lastResult in the returned chain?
+	// Or we just return 'c'. Returning 'c' is fine for side-effects.
 	return c
 }
 
-// ForEach iterates over a collection. The current object in the chain must be
-// a collection that supports the _NewEnum property. The callback function is
-// executed for each item in the collection. The item is passed as a new Chain.
-// If the callback returns false, the iteration stops.
-//
-// Note: This method only supports collections of objects (IDispatch). Items
-// that are not objects are skipped.
+// ForEach iterates over a collection.
 func (c *Chain) ForEach(callback func(item *Chain) bool) *Chain {
 	if c.err != nil || c.disp == nil {
 		return c
 	}
 
-	// Get _NewEnum property
-	// -4 is the standard DISPID for _NewEnum
 	enumVar, err := oleutil.GetProperty(c.disp, "_NewEnum")
 	if err != nil {
-		c.err = err
-		return c
+		return &Chain{err: err, ctx: c.ctx}
 	}
 	defer enumVar.Clear()
 
-	// Get IEnumVARIANT interface
 	if enumVar.VT != ole.VT_UNKNOWN && enumVar.VT != ole.VT_DISPATCH {
-		c.err = errors.New("property _NewEnum is not an object")
-		return c
+		return &Chain{err: errors.New("_NewEnum is not object"), ctx: c.ctx}
 	}
 	
-	// IID_IEnumVARIANT
 	unknown := enumVar.ToIUnknown()
 	if unknown == nil {
-		c.err = errors.New("_NewEnum returned nil IUnknown")
-		return c
+		return &Chain{err: errors.New("_NewEnum nil"), ctx: c.ctx}
 	}
 
-	// IID_IEnumVARIANT
 	iid, err := ole.IIDFromString("{00020404-0000-0000-C000-000000000046}")
 	if err != nil {
-		c.err = err
-		return c
+		return &Chain{err: err, ctx: c.ctx}
 	}
 
 	enumRaw, err := unknown.QueryInterface(iid)
 	if err != nil {
-		c.err = err
-		return c
+		return &Chain{err: err, ctx: c.ctx}
 	}
 	defer enumRaw.Release()
 
 	enum := (*ole.IEnumVARIANT)(unsafe.Pointer(enumRaw))
 
-	// Iterate
 	for {
-		// Next returns (VARIANT, uint, error) in some go-ole versions
 		itemVar, fetched, err := enum.Next(1)
 		if err != nil || fetched == 0 {
 			break
 		}
 		
 		if itemVar.VT == ole.VT_DISPATCH {
-			// Create a new Chain for the item
 			itemDisp := itemVar.ToIDispatch()
-			// ToIDispatch does not AddRef, but Next() implementation does AddRef on the variant content?
-			// Yes, VariantClear (called by itemVar.Clear()) releases it.
-			// So for the Chain, we should probably AddRef if we want the Chain to manage it independently,
-			// OR we rely on the fact that we will clear itemVar after callback.
-			// The Chain implementation assumes it owns the objects in releaseChain.
-			// Let's AddRef for the Chain to be safe and consistent with other methods.
 			itemDisp.AddRef()
 			
 			itemChain := &Chain{
-				disp:         itemDisp,
-				releaseChain: []*ole.IDispatch{itemDisp},
+				disp: itemDisp,
+				ctx:  c.ctx,
+			}
+			// Track item if context exists
+			if c.ctx != nil {
+				c.ctx.Track(itemChain)
 			}
 
 			cont := callback(itemChain)
 			
-			// Release the chain created for the item. This cleans up the AddRef we just did.
-			itemChain.Release()
+			// If not tracked by context, we should release it?
+			// If tracked, context releases it later.
+			// BUT, ForEach creates many items. If we track ALL of them, we might bloat memory 
+			// until Context.Release is called.
+			// Ideally, users should use 'itemChain' locally.
+			// If we track, we are safe.
+			
+			if c.ctx == nil {
+				itemChain.Release()
+			}
 			
 			if !cont {
 				itemVar.Clear()
 				break
 			}
 		}
-		
 		itemVar.Clear()
 	}
 
 	return c
 }
 
-// Fork creates a new independent Chain starting from the current object.
-// The new chain takes ownership of a new reference to the current object (AddRef is called).
-// The caller is responsible for calling Release() on the returned chain.
-// This is useful when you want to branch off a new chain from an intermediate result
-// without breaking the original chain or manually handling Store/From.
+// Fork is now redundant but kept for API compatibility or explicit branching.
+// It simply returns the chain itself (or a clone) because chains are immutable.
+// Actually, Fork meant "branch off independent ref". Get/Call do that now.
+// So Fork can just return 'c' with AddRef? 
+// No, Get/Call creates new Refs. Fork creates a clone of CURRENT ref.
 func (c *Chain) Fork() *Chain {
 	if c.err != nil {
-		return &Chain{err: c.err}
+		return &Chain{err: c.err, ctx: c.ctx}
 	}
 	if c.disp == nil {
-		return &Chain{err: errors.New("no object to fork")}
+		return &Chain{err: errors.New("nil dispatch"), ctx: c.ctx}
 	}
-
-	// AddRef because the new chain will own this object too.
 	c.disp.AddRef()
-
-	return &Chain{
-		disp:         c.disp,
-		releaseChain: []*ole.IDispatch{c.disp},
+	newChain := &Chain{disp: c.disp, ctx: c.ctx}
+	if c.ctx != nil {
+		c.ctx.Track(newChain)
 	}
+	return newChain
 }
 
-// Store is a terminal method that transfers ownership of the current IDispatch
-// object to the caller. The user is responsible for calling Release on the
-// returned object. This method also releases all other resources managed by the
-// chain.
+// Store transfers ownership to caller.
+// In immutable pattern, we just return the disp and detach from Context if needed?
+// Or we just return AddRef'd disp.
 func (c *Chain) Store() (*ole.IDispatch, error) {
 	if c.err != nil {
-		c.Release() // Release other resources
 		return nil, c.err
 	}
 	if c.disp == nil {
-		c.Release()
-		return nil, errors.New("no IDispatch object to store")
+		return nil, errors.New("nil dispatch")
 	}
 
-	// The object to be returned to the user.
-	storedDisp := c.disp
-
-	// Decouple the stored object from the chain's lifecycle management.
-	// Remove the object from the release chain.
-	// The current disp is always the last one added.
-	if len(c.releaseChain) > 0 {
-		lastIndex := len(c.releaseChain) - 1
-		if c.releaseChain[lastIndex] == storedDisp {
-			c.releaseChain = c.releaseChain[:lastIndex]
-		}
-	}
-
-	// Release any other resources held by the chain.
-	c.Release()
-
-	return storedDisp, nil
+	// Return a new reference
+	c.disp.AddRef()
+	return c.disp, nil
 }
 
-// Release releases all intermediate IDispatch objects created during the chain
-// in the reverse order of their creation.
+// Release releases the *current* chain's held dispatch object.
+// It does not release "parent" objects because chains are now independent.
 func (c *Chain) Release() error {
-	for i := len(c.releaseChain) - 1; i >= 0; i-- {
-		c.releaseChain[i].Release()
+	if c.disp != nil {
+		c.disp.Release()
+		// c.disp = nil // Cannot zero out if we want to be safe against double free? 
+		// Actually Release is destructive.
 	}
-	c.releaseChain = nil // Clear the slice
-
-	// Also clear the last result if it holds a variant
 	if c.lastResult != nil {
 		c.lastResult.Clear()
 		c.lastResult = nil
 	}
-
-	err := c.err
-	c.err = nil
-	return err
+	return c.err
 }
 
-// IsDispatch returns true if the last result is a dispatch object.
 func (c *Chain) IsDispatch() bool {
 	return c.lastResult != nil && c.lastResult.VT == ole.VT_DISPATCH
 }
 
-// Value retrieves the value from the last operation (Get or Call). It also
-// releases any intermediate IDispatch objects, similar to Release().
-// The returned value is the Go equivalent of the VARIANT result.
 func (c *Chain) Value() (interface{}, error) {
 	if c.err != nil {
-		return nil, c.Release()
+		return nil, c.err
 	}
-
 	if c.lastResult == nil {
-		c.Release()
 		return nil, nil
 	}
-
 	if c.lastResult.VT == ole.VT_DISPATCH {
-		c.Release()
-		return nil, errors.New("value cannot return IDispatch, use Store() instead")
+		return nil, errors.New("result is IDispatch, use Store")
 	}
-
-	val := c.lastResult.Value()
-	err := c.Release() // Release resources after getting the value
-	return val, err
+	return c.lastResult.Value(), nil
 }
 
-// Err returns the first error that occurred during the chain.
 func (c *Chain) Err() error {
 	return c.err
 }
