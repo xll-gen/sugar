@@ -33,7 +33,7 @@ func main() {
 	err := sugar.Do(func(ctx *sugar.Context) error {
 		excel := ctx.Create("Excel.Application")
 		if err := excel.Err(); err != nil {
-			log.Fatal(err)
+			return err
 		}
 		
 		// Schedule Excel to quit
