@@ -30,7 +30,7 @@ import (
 
 func main() {
 	// sugar.Do guarantees COM initialization and automatic resource cleanup.
-	err := sugar.Do(func(ctx *sugar.Context) {
+	err := sugar.Do(func(ctx *sugar.Context) error {
 		excel := ctx.Create("Excel.Application")
 		if err := excel.Err(); err != nil {
 			log.Fatal(err)
@@ -46,6 +46,7 @@ func main() {
             
 		// When the function returns, excel, workbooks, and the new workbook 
 		// objects are all automatically released.
+		return nil
 	})
 
 	if err != nil {
@@ -83,14 +84,16 @@ The `sugar.Context` acts as a resource collector (Arena). Any object created via
 If you want to clean up resources for a specific part of a function early, use `ctx.Do` to create a nested arena.
 
 ```go
-sugar.Do(func(ctx *sugar.Context) {
+sugar.Do(func(ctx *sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     
-    ctx.Do(func(innerCtx *sugar.Context) {
+    ctx.Do(func(innerCtx *sugar.Context) error {
         // Objects created in this block are released immediately when it ends.
         wb := excel.Get("Workbooks").Call("Add")
+        return nil
     }) 
     // 'wb' is released here, while 'excel' remains valid.
+    return nil
 })
 ```
 
@@ -101,7 +104,7 @@ The `expression` package allows you to manipulate complex hierarchies with a sin
 ```go
 import "github.com/xll-gen/sugar/expression"
 
-sugar.Do(func(ctx *sugar.Context) {
+sugar.Do(func(ctx *sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     ctx.Track(excel.Get("Workbooks").Call("Add"))
 
@@ -111,6 +114,7 @@ sugar.Do(func(ctx *sugar.Context) {
     // Read values
     val, _ := expression.Get(excel, "ActiveSheet.Range('A1').Value")
     fmt.Println(val)
+    return nil
 })
 ```
 
