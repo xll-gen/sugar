@@ -1,20 +1,14 @@
-# sugar: A fluent, chainable API for COM automation in Go
+# sugar: A fluent, immutable COM automation library for Go
 
-`sugar` is a Go library that provides a fluent, chainable API for Component Object Model (COM) automation on Windows. It acts as a syntactic sugar layer on top of the powerful `go-ole` library, simplifying COM interactions and making your code more readable and expressive.
+`sugar` is a flexible and safe Go library for Component Object Model (COM) automation on Windows. Built on top of the powerful `go-ole` library, it introduces **Immutability** and the **Arena (Context) pattern** to help you write clean code without worrying about resource leaks.
 
-This library is designed to manage the complexity of COM object lifecycles, offering both manual and automatic resource management to prevent memory leaks.
+## Key Features
 
-## Features
-
-- **Fluent, Chainable Interface:** Write clean and readable automation scripts.
-- **Simplified Object Lifecycle:** Clear and predictable resource management.
-- **Easy Object Creation:** Functions to create new COM objects (`Create`), attach to existing ones (`GetActive`), or wrap your own (`From`).
-- **Error Handling:** Errors are captured and handled at the end of the chain.
-
-## Prerequisites
-
-- **Windows Only:** This library depends on `go-ole` and the underlying COM technology, which is specific to the Windows operating system.
-- **Go:** Version 1.18 or higher.
+- **Standard Execution Pattern (`Do`/`Go`):** Automatically handles thread locking (`LockOSThread`) and COM initialization (`CoInitialize`).
+- **Immutable Chain:** All operations (`Get`, `Call`, etc.) return a new Chain instance, preventing side effects on original objects.
+- **Automatic Resource Management (Arena):** All COM objects created within a context are automatically released in reverse order when the block completes.
+- **Standard `context.Context` Integration:** Leverage Go's standard context features for cancellation, timeouts, and value passing.
+- **Expression-Based Automation:** Navigate complex object hierarchies using a single string expression.
 
 ## Installation
 
@@ -24,187 +18,106 @@ go get github.com/xll-gen/sugar
 
 ## Quick Start
 
-Here's a simple example of how to launch Microsoft Excel, make it visible, and add a new workbook.
+A simple example using `sugar.Do` to launch Excel and add a workbook. Resource cleanup is handled automatically.
 
 ```go
 package main
 
 import (
 	"log"
-
-	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
 )
 
 func main() {
-	// Initialize the COM library for the current goroutine.
-	ole.CoInitialize(0)
-	defer ole.CoUninitialize()
+	// sugar.Do guarantees COM initialization and automatic resource cleanup.
+	err := sugar.Do(func(ctx *sugar.Context) {
+		excel := ctx.Create("Excel.Application")
+		if err := excel.Err(); err != nil {
+			log.Fatal(err)
+		}
+		
+		// Schedule Excel to quit
+		defer excel.Call("Quit")
 
-	// Create a new Excel application instance.
-	err := sugar.Create("Excel.Application").
-		Put("Visible", true).  // Set the 'Visible' property to true.
-		Get("Workbooks").       // Get the Workbooks collection.
-		Call("Add").            // Call the 'Add' method to create a new workbook.
-		Release()              // Release all COM objects created in the chain.
+		// Method chaining (Immutable pattern)
+		excel.Put("Visible", true).
+			Get("Workbooks").
+			Call("Add")
+            
+		// When the function returns, excel, workbooks, and the new workbook 
+		// objects are all automatically released.
+	})
 
 	if err != nil {
-		log.Fatalf("Excel automation failed: %v", err)
+		log.Fatalf("Automation failed: %v", err)
 	}
 }
 ```
 
 ## Core Concepts
 
-### 1. The Chain
+### 1. Standard Execution (`sugar.Do` & `sugar.Go`)
 
-`sugar` works by creating a "chain" of operations. The chain starts with an initial object and continues with a series of `Get`, `Call`, or `Put` actions.
+COM is sensitive to the execution thread. `sugar` provides safe entry points to manage this.
 
-- `Get(property, ...args)`: Retrieves a property, which can be another object.
-- `Call(method, ...args)`: Executes a method.
-- `Put(property, ...args)`: Sets the value of a property.
+- **`sugar.Do`**: Locks the current goroutine to an OS thread and executes synchronously.
+- **`sugar.Go`**: Starts a new goroutine (new OS thread) and independently initializes the COM environment for asynchronous work.
 
-Each of these methods returns the chain, allowing you to append the next operation.
+### 2. Immutable Chain
 
-### 2. Terminal Methods
-
-A chain must always end with a **terminal method**. This is critical for releasing COM objects and handling errors. If you forget to call a terminal method, you will leak resources.
-
-- `Release()`: Releases all COM objects acquired during the chain and returns any error that occurred. This is the most common terminal method for chains that do not return a value.
-- `Value()`: Returns the value from the last `Get` or `Call` operation as an `interface{}`. It also releases all resources.
-- `Err()`: Returns the first error that occurred during the chain. It also releases all resources.
-
-### 3. Creating a Chain
-
-There are three ways to start a chain:
-
-- `sugar.Create(progID string)`: Creates a new COM object (e.g., `"Excel.Application"`). The chain takes ownership of this object and is responsible for releasing it.
-- `sugar.GetActive(progID string)`: Attaches to a running instance of a COM object. The chain takes ownership and will release it.
-- `sugar.From(disp *ole.IDispatch)`: Wraps an existing `*ole.IDispatch` object that you manage yourself. The chain does **not** take ownership of the initial object; you are responsible for releasing it.
-
-### 4. Resource Management
-
-All objects created in a chain are tracked and released only when a terminal method (`Release`, `Value`, `Err`) is called. This gives you deterministic and immediate cleanup.
+Methods like `Get`, `Call`, and `ForEach` always return a **NEW `Chain` instance**.
 
 ```go
-// All intermediate objects (Workbooks, new Workbook) are released at the end.
-err := sugar.Create("Excel.Application").
-    Get("Workbooks").
-    Call("Add").
-    Release() // Releases Excel, the Workbooks object, and the new Workbook object.
+workbooks := excel.Get("Workbooks") // 'excel' still points to Application
+wb := workbooks.Call("Add")         // 'workbooks' still points to the Workbooks collection
 ```
 
-## Advanced Usage
+### 3. Arena Context
 
-### Retrieving a Value
+The `sugar.Context` acts as a resource collector (Arena). Any object created via `ctx.Create`, `ctx.From`, or derived from a chain is automatically registered with that context and cleaned up when the `Do` block ends.
 
-Use the `Value()` terminal method to get the result of the last operation.
+**Manual `Release()` calls are no longer necessary.**
+
+### 4. Nested Scopes
+
+If you want to clean up resources for a specific part of a function early, use `ctx.Do` to create a nested arena.
 
 ```go
-// Get the name of the active worksheet.
-val, err := sugar.Create("Excel.Application").
-    Get("Workbooks").
-    Call("Add").
-    Get("ActiveSheet").
-    Get("Name").
-    Value() // val will contain "Sheet1"
-
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Printf("Active sheet name: %v", val)
+sugar.Do(func(ctx *sugar.Context) {
+    excel := ctx.Create("Excel.Application")
+    
+    ctx.Do(func(innerCtx *sugar.Context) {
+        // Objects created in this block are released immediately when it ends.
+        wb := excel.Get("Workbooks").Call("Add")
+    }) 
+    // 'wb' is released here, while 'excel' remains valid.
+})
 ```
 
-### Storing and Reusing an Object
+## Expression-Based Automation (Subpackage)
 
-Sometimes you need to get an object from a chain and use it multiple times. The `Store()` method allows you to do this.
-
-`Store()` is a terminal method that ends the chain and transfers ownership of the *current* COM object to you. You are then responsible for calling `Release()` on it when you are done. Because it is a terminal method, you do not need to call `Release()` or `Err()` after it.
-
-A common pattern is to create and store the main application object first, and then use it to build new, independent chains.
+The `expression` package allows you to manipulate complex hierarchies with a single line of code.
 
 ```go
-// Create the Excel application and store the object.
-excel, err := sugar.Create("Excel.Application").Store()
-if err != nil {
-    log.Fatalf("Failed to create Excel object: %v", err)
-}
-// IMPORTANT: You are now responsible for releasing the object.
-defer excel.Release()
+import "github.com/xll-gen/sugar/expression"
 
-// Now you can use 'excel' to start multiple chains.
-// Make Excel visible and add a workbook.
-err = sugar.From(excel).
-    Put("Visible", true).
-    Get("Workbooks").
-    Call("Add").
-    Release() // Terminate this chain.
+sugar.Do(func(ctx *sugar.Context) {
+    excel := ctx.Create("Excel.Application")
+    ctx.Track(excel.Get("Workbooks").Call("Add"))
 
-if err != nil {
-    log.Fatal(err)
-}
-
-// Get the active sheet and write some values to it.
-sheet, err := sugar.From(excel).Get("ActiveSheet").Store()
-if err != nil {
-    log.Fatal(err)
-}
-defer sheet.Release() // You also own this object now.
-
-sugar.From(sheet).Get("Cells", 1, 1).Put("Value", "Hello").Release()
-sugar.From(sheet).Get("Cells", 1, 2).Put("Value", "World").Release()
+	// Set complex paths at once
+    expression.Put(excel, "ActiveSheet.Range('A1').Value", "Hello Sugar!")
+    
+    // Read values
+    val, _ := expression.Get(excel, "ActiveSheet.Range('A1').Value")
+    fmt.Println(val)
+})
 ```
 
-## Expression-Based Automation
+## Considerations
 
-The `expression` subpackage provides a powerful way to interact with COM objects using simple string expressions, which is ideal for simplifying complex or deeply nested operations.
-
-Here is a complete example of how to use it with Excel. This code will create a new Excel instance, add a workbook, write a value to a cell using `expression.Put`, and read it back using `expression.Get`.
-
-```go
-package main
-
-import (
-	"fmt"
-	"log"
-
-	"github.com/go-ole/go-ole"
-	"github.com/xll-gen/sugar"
-	"github.com/xll-gen/sugar/expression"
-)
-
-func main() {
-	// Initialize COM for the current goroutine.
-	ole.CoInitialize(0)
-	defer ole.CoUninitialize()
-
-	// Create a new Excel application instance.
-	excel, err := sugar.Create("Excel.Application").Store()
-	if err != nil {
-		log.Fatalf("Failed to create Excel object: %v", err)
-	}
-	// Ensure the Excel process is quit when we are done.
-	defer excel.Release()
-	defer sugar.From(excel).Call("Quit").Release()
-
-	// Ensure there is a workbook.
-	sugar.From(excel).Get("Workbooks").Call("Add").Release()
-
-	// Use expression.Put to set a cell's value.
-	err = expression.Put(excel, "ActiveSheet.Cells(1, 1).Value", "Hello from expression!")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Use expression.Get to retrieve the value.
-	val, err := expression.Get(excel, "ActiveSheet.Cells(1, 1).Value")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("Cell A1 contains: %v", val)
-}
-```
+- **Windows Only:** This library depends on Windows COM technology and only works on Windows OS.
+- **Object Sharing Between Threads:** Sharing raw `IDispatch` pointers between threads (goroutines) without proper marshaling is dangerous. We recommend creating independent objects in each goroutine using `sugar.Go`.
 
 ## License
 

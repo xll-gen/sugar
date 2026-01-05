@@ -69,4 +69,5 @@ The `expression` package allows navigating COM objects using string expressions 
 2.  **Never manually call `CoInitialize`** unless implementing a low-level runner.
 3.  **Prefer `ctx.Create`** over `sugar.Create` to ensure automatic tracking.
 4.  **Immutable behavior**: Do not expect a `Chain` variable to change its internal state after a method call.
-5.  **Thread Safety**: Remember that `Go` routines start fresh threads; do not share raw `IDispatch` pointers across threads without proper COM marshaling (though `sugar.Go` makes creating thread-local objects easy).
+5. **Thread Safety**: Remember that `Go` routines start fresh threads; do not share raw `IDispatch` pointers across threads without proper COM marshaling (though `sugar.Go` makes creating thread-local objects easy).
+6. **Language Requirement**: All documentation (including README and AGENTS.md) and code comments must be written in English.
