@@ -4,6 +4,7 @@ package expression
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/expr-lang/expr/ast"
 	"github.com/expr-lang/expr/parser"
@@ -11,36 +12,51 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-// evaluate parses and evaluates the expression within the context of the object.
-// It returns the raw result (usually a *sugar.Chain for objects).
-func evaluate(obj interface{}, expression string) (interface{}, error) {
-	var chain *sugar.Chain
-	switch v := obj.(type) {
-	case *sugar.Chain:
-		chain = v
-	case *ole.IDispatch:
-		// Note: Creating a chain from IDispatch without a context means 
-		// it won't be auto-tracked unless the caller manages it.
-		// However, inside sugar.Do, the user should ideally pass a *sugar.Chain.
-		chain = sugar.From(v)
-	default:
-		return nil, fmt.Errorf("unsupported type for evaluate: %T", obj)
-	}
+// Program represents a compiled expression.
+type Program struct {
+	node ast.Node
+}
 
+// Compile parses an expression and returns a Program.
+func Compile(expression string) (*Program, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {
 		return nil, err
 	}
+	return &Program{node: tree.Node}, nil
+}
 
-	visitor := &comVisitor{initialChain: chain}
-	return visitor.eval(tree.Node)
+// Run executes a compiled Program against an environment.
+// The env can be a *sugar.Chain, *ole.IDispatch, or a map[string]interface{}.
+func (p *Program) Run(env interface{}) (interface{}, error) {
+	var chain *sugar.Chain
+	var envMap map[string]interface{}
+
+	switch v := env.(type) {
+	case *sugar.Chain:
+		chain = v
+	case *ole.IDispatch:
+		chain = sugar.From(v)
+	case map[string]interface{}:
+		envMap = v
+	}
+
+	visitor := &comVisitor{initialChain: chain, envMap: envMap}
+	return visitor.eval(p.node)
+}
+
+// Eval parses and executes an expression in one step.
+func Eval(expression string, env interface{}) (interface{}, error) {
+	p, err := Compile(expression)
+	if err != nil {
+		return nil, err
+	}
+	return p.Run(env)
 }
 
 // Get retrieves a property or calls a method using an expression.
-// It returns the Go value of the result. If the result is a COM object,
-// it returns an error (use Store or just use the expression to navigate).
 func Get(obj interface{}, expression string) (interface{}, error) {
-	result, err := evaluate(obj, expression)
+	result, err := Eval(expression, obj)
 	if err != nil {
 		return nil, err
 	}
@@ -49,18 +65,15 @@ func Get(obj interface{}, expression string) (interface{}, error) {
 		if err := finalChain.Err(); err != nil {
 			return nil, err
 		}
-		// Returns the Go value. For IDispatch, this will return an error.
 		return finalChain.Value()
 	}
 
 	return result, nil
 }
 
-// Store is kept for compatibility but in the Context/Arena model, 
-// you can often just use the Chain returned by evaluate-like operations.
-// It returns the raw *ole.IDispatch with an increased reference count.
+// Store retrieves a COM object (IDispatch) using an expression.
 func Store(obj interface{}, expression string) (*ole.IDispatch, error) {
-	result, err := evaluate(obj, expression)
+	result, err := Eval(expression, obj)
 	if err != nil {
 		return nil, err
 	}
@@ -75,14 +88,67 @@ func Store(obj interface{}, expression string) (*ole.IDispatch, error) {
 	return nil, fmt.Errorf("expression did not evaluate to a COM object")
 }
 
+// Put sets a property using an expression.
+func Put(obj interface{}, expression string, value interface{}) error {
+	p, err := Compile(expression)
+	if err != nil {
+		return err
+	}
+
+	memberNode, ok := p.node.(*ast.MemberNode)
+	if !ok {
+		return fmt.Errorf("invalid Put expression: must be property access")
+	}
+
+	var chain *sugar.Chain
+	var envMap map[string]interface{}
+	switch v := obj.(type) {
+	case *sugar.Chain:
+		chain = v
+	case *ole.IDispatch:
+		chain = sugar.From(v)
+	case map[string]interface{}:
+		envMap = v
+	}
+
+	visitor := &comVisitor{initialChain: chain, envMap: envMap}
+	parentObj, err := visitor.eval(memberNode.Node)
+	if err != nil {
+		return err
+	}
+
+	parentChain, ok := parentObj.(*sugar.Chain)
+	if !ok {
+		return fmt.Errorf("parent is not COM object: %T", parentObj)
+	}
+
+	propName := ""
+	if id, ok := memberNode.Property.(*ast.StringNode); ok {
+		propName = id.Value
+	} else if id, ok := memberNode.Property.(*ast.IdentifierNode); ok {
+		propName = id.Value
+	}
+
+	return parentChain.Put(propName, value).Err()
+}
+
 type comVisitor struct {
 	initialChain *sugar.Chain
+	envMap       map[string]interface{}
 }
 
 func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 	switch n := node.(type) {
 	case *ast.IdentifierNode:
-		return v.initialChain.Get(n.Value), nil
+		if v.envMap != nil {
+			if val, ok := v.envMap[n.Value]; ok {
+				return val, nil
+			}
+		}
+		if v.initialChain != nil {
+			return v.initialChain.Get(n.Value), nil
+		}
+		return nil, fmt.Errorf("identifier not found: %s", n.Value)
 
 	case *ast.MemberNode:
 		left, err := v.eval(n.Node)
@@ -91,16 +157,16 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		}
 		chain, ok := left.(*sugar.Chain)
 		if !ok {
+			// Fallback to reflection for non-COM objects if needed? 
+			// For now, return error.
 			return nil, fmt.Errorf("cannot access property on type %T", left)
 		}
-		
+
 		propName := ""
 		if id, ok := n.Property.(*ast.StringNode); ok {
 			propName = id.Value
 		} else if id, ok := n.Property.(*ast.IdentifierNode); ok {
 			propName = id.Value
-		} else {
-			return nil, fmt.Errorf("unsupported property node: %T", n.Property)
 		}
 		return chain.Get(propName), nil
 
@@ -111,7 +177,6 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
-			// If argument is a chain, get its value
 			if argChain, ok := argVal.(*sugar.Chain); ok {
 				val, err := argChain.Value()
 				if err != nil {
@@ -133,7 +198,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			if !ok {
 				return nil, fmt.Errorf("cannot call method on type %T", obj)
 			}
-			
+
 			methodName := ""
 			if id, ok := callee.Property.(*ast.StringNode); ok {
 				methodName = id.Value
@@ -143,60 +208,114 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			return chain.Call(methodName, args...), nil
 
 		case *ast.IdentifierNode:
-			return v.initialChain.Call(callee.Value, args...), nil
+			if v.envMap != nil {
+				if val, ok := v.envMap[callee.Value]; ok {
+					// If it's a function in map, we could call it here.
+					// For now, assume it's a COM method on the implicit root if not in map.
+					if fn, ok := val.(func(...interface{}) (interface{}, error)); ok {
+						return fn(args...)
+					}
+				}
+			}
+			if v.initialChain != nil {
+				return v.initialChain.Call(callee.Value, args...), nil
+			}
+			return nil, fmt.Errorf("method not found: %s", callee.Value)
 		default:
 			return nil, fmt.Errorf("unsupported call on %T", callee)
 		}
 
-	case *ast.IntegerNode: return n.Value, nil
-	case *ast.StringNode:  return n.Value, nil
-	case *ast.BoolNode:    return n.Value, nil
-	case *ast.FloatNode:   return n.Value, nil
-	case *ast.NilNode:     return nil, nil
+	case *ast.BinaryNode:
+		left, err := v.eval(n.Left)
+		if err != nil {
+			return nil, err
+		}
+		right, err := v.eval(n.Right)
+		if err != nil {
+			return nil, err
+		}
+
+		// Handle basic arithmetic
+		return evalBinary(n.Operator, left, right)
+
+	case *ast.IntegerNode:
+		return n.Value, nil
+	case *ast.StringNode:
+		return n.Value, nil
+	case *ast.BoolNode:
+		return n.Value, nil
+	case *ast.FloatNode:
+		return n.Value, nil
+	case *ast.NilNode:
+		return nil, nil
 	default:
-		return nil, fmt.Errorf("unsupported node: %T", n)
+		return nil, fmt.Errorf("unsupported node: %T", node)
 	}
 }
 
-// Put sets a property using an expression.
-func Put(obj interface{}, expression string, value interface{}) error {
-	var chain *sugar.Chain
-	switch v := obj.(type) {
-	case *sugar.Chain:
-		chain = v
-	case *ole.IDispatch:
-		chain = sugar.From(v)
-	default:
-		return fmt.Errorf("unsupported type for Put: %T", obj)
+func evalBinary(op string, left, right interface{}) (interface{}, error) {
+	// Unwrap Chains if necessary
+	if lc, ok := left.(*sugar.Chain); ok {
+		var err error
+		left, err = lc.Value()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if rc, ok := right.(*sugar.Chain); ok {
+		var err error
+		right, err = rc.Value()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	tree, err := parser.Parse(expression)
-	if err != nil {
-		return err
+	lv := reflect.ValueOf(left)
+	rv := reflect.ValueOf(right)
+
+	switch op {
+	case "+":
+		if lv.Kind() == reflect.String || rv.Kind() == reflect.String {
+			return fmt.Sprintf("%v%v", left, right), nil
+		}
+		if isNumber(lv) && isNumber(rv) {
+			return toFloat(lv) + toFloat(rv), nil
+		}
+	case "-":
+		if isNumber(lv) && isNumber(rv) {
+			return toFloat(lv) - toFloat(rv), nil
+		}
+	case "*":
+		if isNumber(lv) && isNumber(rv) {
+			return toFloat(lv) * toFloat(rv), nil
+		}
+	case "/":
+		if isNumber(lv) && isNumber(rv) {
+			return toFloat(lv) / toFloat(rv), nil
+		}
 	}
 
-	memberNode, ok := tree.Node.(*ast.MemberNode)
-	if !ok {
-		return fmt.Errorf("invalid Put expression: must be property access")
-	}
+	return nil, fmt.Errorf("unsupported binary operation: %v %s %v", reflect.TypeOf(left), op, reflect.TypeOf(right))
+}
 
-	visitor := &comVisitor{initialChain: chain}
-	parentObj, err := visitor.eval(memberNode.Node)
-	if err != nil {
-		return err
+func isNumber(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
 	}
+	return false
+}
 
-	parentChain, ok := parentObj.(*sugar.Chain)
-	if !ok {
-		return fmt.Errorf("parent is not COM object: %T", parentObj)
+func toFloat(v reflect.Value) float64 {
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(v.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(v.Uint())
+	case reflect.Float32, reflect.Float64:
+		return v.Float()
 	}
-
-	propName := ""
-	if id, ok := memberNode.Property.(*ast.StringNode); ok {
-		propName = id.Value
-	} else if id, ok := memberNode.Property.(*ast.IdentifierNode); ok {
-		propName = id.Value
-	}
-
-	return parentChain.Put(propName, value).Err()
+	return 0
 }
