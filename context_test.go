@@ -12,7 +12,6 @@ import (
 
 func TestContext_Lifecycle(t *testing.T) {
 	sugar.Do(func(ctx *sugar.Context) error {
-		// Test manual context creation within Do
 		subCtx := sugar.NewContext(ctx)
 		defer subCtx.Release()
 
@@ -31,7 +30,6 @@ func TestContext_Lifecycle(t *testing.T) {
 }
 
 func TestContext_NestedDo(t *testing.T) {
-	// Outer Do
 	err := sugar.Do(func(ctx *sugar.Context) error {
 		excel := ctx.Create("Excel.Application")
 		if err := excel.Err(); err != nil {
@@ -40,14 +38,11 @@ func TestContext_NestedDo(t *testing.T) {
 		}
 		defer excel.Call("Quit")
 
-		// Inner Do using parent context's Do method for proper nesting
 		err := ctx.Do(func(innerCtx *sugar.Context) error {
-			// This should be safe and share the thread/COM init
 			wb := innerCtx.Track(excel.Get("Workbooks").Call("Add").Fork())
 			if err := wb.Err(); err != nil {
 				t.Errorf("inner Do failed: %v", err)
 			}
-			// wb is released when inner Do returns
 			return nil
 		})
 		
@@ -66,7 +61,6 @@ func TestContext_AsyncGo(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// Outer Do
 	sugar.Do(func(ctx *sugar.Context) error {
 		excel := ctx.Create("Excel.Application")
 		if err := excel.Err(); err != nil {
@@ -76,11 +70,8 @@ func TestContext_AsyncGo(t *testing.T) {
 		}
 		defer excel.Call("Quit")
 
-		// Start an async task using Go
 		ctx.Go(func(asyncCtx *sugar.Context) error {
 			defer wg.Done()
-			
-			// Let's create a new object in the new thread to be safe.
 			asyncExcel := asyncCtx.Create("Excel.Application")
 			if err := asyncExcel.Err(); err != nil {
 				t.Errorf("Async Excel creation failed: %v", err)
@@ -96,14 +87,12 @@ func TestContext_AsyncGo(t *testing.T) {
 }
 
 func TestContext_WithCancel(t *testing.T) {
-	// Test standard context integration
 	stdCtx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	sugar.With(stdCtx).Do(func(ctx *sugar.Context) error {
 		select {
 		case <-ctx.Done():
-			// Success: context was correctly passed and is cancelled
 		default:
 			t.Error("context should have been cancelled")
 		}

@@ -8,7 +8,6 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-// setupExcel creates an Excel instance using the context.
 func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
@@ -19,7 +18,6 @@ func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
 }
 
 func TestEval_Basic(t *testing.T) {
-	// Test without COM
 	res, err := Eval("2 + 2", nil)
 	if err != nil {
 		t.Fatalf("Eval failed: %v", err)
@@ -52,7 +50,6 @@ func TestEval_CompileRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
-		
 		if res == nil {
 			t.Fatal("Run returned nil")
 		}

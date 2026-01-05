@@ -21,13 +21,11 @@ func With(ctx context.Context) *Runner {
 }
 
 // Do executes the provided function in the current goroutine.
-// It ensures proper COM initialization and thread locking only if not already initialized.
 func (r *Runner) Do(fn func(ctx *Context) error) (err error) {
 	if r.parent == nil {
 		r.parent = context.Background()
 	}
 
-	// Only skip initialization if we are NOT forced and already inside a sugar.Do block
 	isNested := !r.forceInit && r.parent.Value(activeSugarKey) != nil
 
 	if !isNested {
@@ -40,7 +38,6 @@ func (r *Runner) Do(fn func(ctx *Context) error) (err error) {
 		defer ole.CoUninitialize()
 	}
 
-	// Create a sub-context marked as active, and a new arena
 	innerStdCtx := context.WithValue(r.parent, activeSugarKey, true)
 	ctx := NewContext(innerStdCtx)
 	
@@ -55,10 +52,8 @@ func (r *Runner) Do(fn func(ctx *Context) error) (err error) {
 }
 
 // Go executes the provided function in a new goroutine.
-// It always performs full initialization as it's a new thread.
 func (r *Runner) Go(fn func(ctx *Context) error) {
 	go func() {
-		// Create a new runner that forces initialization for the new goroutine
 		runner := &Runner{
 			parent:    r.parent,
 			forceInit: true,
@@ -67,12 +62,12 @@ func (r *Runner) Go(fn func(ctx *Context) error) {
 	}()
 }
 
-// Do executes the provided function with a Background context.
+// Do executes the function with a Background context.
 func Do(fn func(ctx *Context) error) error {
 	return With(context.Background()).Do(fn)
 }
 
-// Go executes the provided function in a new goroutine with a Background context.
+// Go executes the function in a new goroutine with a Background context.
 func Go(fn func(ctx *Context) error) {
 	With(context.Background()).Go(fn)
 }

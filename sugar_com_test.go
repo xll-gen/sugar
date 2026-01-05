@@ -8,8 +8,6 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-// setupExcel creates an Excel instance using the context.
-// It sets up a deferred Quit to ensure the process terminates.
 func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
@@ -26,11 +24,8 @@ func TestChain_Properties(t *testing.T) {
 	sugar.Do(func(ctx *sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
-		
-		// Ensure Quit
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
-		// Test Put and Get
 		err := excel.Put("Visible", false).Err()
 		if err != nil {
 			t.Errorf("failed to set Visible: %v", err)
@@ -53,14 +48,11 @@ func TestChain_Methods(t *testing.T) {
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
-		// Test nested Get and Call
-		// Immutable chain: calls return new chains, auto-tracked by ctx.
 		wb := excel.Get("Workbooks").Call("Add")
 		if err := wb.Err(); err != nil {
 			t.Errorf("failed to add workbook: %v", err)
 		}
 
-		// Re-acquire Workbooks to get Count
 		wbs := excel.Get("Workbooks")
 		if err := wbs.Err(); err != nil {
 			t.Fatalf("failed to get Workbooks: %v", err)
@@ -73,12 +65,9 @@ func TestChain_Methods(t *testing.T) {
 		
 		var countInt int
 		switch v := count.(type) {
-		case int32:
-			countInt = int(v)
-		case int64:
-			countInt = int(v)
-		case int:
-			countInt = v
+		case int32: countInt = int(v)
+		case int64: countInt = int(v)
+		case int:   countInt = v
 		default:
 			t.Fatalf("unexpected type for count: %T", count)
 		}
@@ -96,14 +85,12 @@ func TestChain_Store(t *testing.T) {
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
-		// Test Store (manual management mixed with context)
 		wbDisp, err := excel.Get("Workbooks").Call("Add").Store()
 		if err != nil {
 			t.Fatalf("failed to store workbook: %v", err)
 		}
 		defer wbDisp.Release()
 
-		// Create a chain from stored disp using context
 		wb := ctx.From(wbDisp)
 		sheetDisp, err := wb.Get("ActiveSheet").Store()
 		if err != nil {
@@ -134,7 +121,6 @@ func TestChain_Errors(t *testing.T) {
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
-		// Test error propagation in chain
 		err := excel.Get("NonExistentProperty").Get("Another").Err()
 		if err == nil {
 			t.Error("expected error for non-existent property, got nil")
@@ -172,7 +158,6 @@ func TestChain_IsDispatch(t *testing.T) {
 			t.Error("expected IsDispatch() to be true for Workbooks")
 		}
 		
-		// Immutable chain: excel.Get("Visible") works on App object
 		isDisp = excel.Get("Visible").IsDispatch()
 		if isDisp {
 			t.Error("expected IsDispatch() to be false for Visible (bool)")
@@ -188,13 +173,10 @@ func TestChain_ForEach(t *testing.T) {
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		wbs := excel.Get("Workbooks")
-		
-		// Add 2 workbooks
 		for i := 0; i < 2; i++ {
 			wbs.Call("Add")
 		}
 
-		// 1. Count workbooks
 		count := 0
 		err := wbs.ForEach(func(item *sugar.Chain) bool {
 			count++
@@ -208,11 +190,10 @@ func TestChain_ForEach(t *testing.T) {
 			t.Errorf("expected at least 2 workbooks, counted %d", count)
 		}
 
-		// 2. Test early exit
 		count = 0
 		err = wbs.ForEach(func(item *sugar.Chain) bool {
 			count++
-			return false // Stop after first item
+			return false
 		}).Err()
 
 		if err != nil {
@@ -231,20 +212,15 @@ func TestChain_Fork(t *testing.T) {
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
-		// 1. Create a workbook and Fork (which is just explicit clone now)
 		wbChain := excel.Get("Workbooks").Call("Add").Fork()
-		
 		if err := wbChain.Err(); err != nil {
 			t.Fatalf("Fork failed: %v", err)
 		}
 		
-		// 2. Use the forked chain
 		err := wbChain.Put("Saved", true).Err()
 		if err != nil {
 			t.Errorf("failed to use forked chain: %v", err)
 		}
-		
-		// 3. No manual Release needed (handled by ctx)
 		return nil
 	})
 }

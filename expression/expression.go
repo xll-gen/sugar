@@ -17,7 +17,7 @@ type Program struct {
 	node ast.Node
 }
 
-// Compile parses an expression and returns a Program.
+// Compile parses an expression.
 func Compile(expression string) (*Program, error) {
 	tree, err := parser.Parse(expression)
 	if err != nil {
@@ -27,7 +27,6 @@ func Compile(expression string) (*Program, error) {
 }
 
 // Run executes a compiled Program against an environment.
-// The env can be a *sugar.Chain, *ole.IDispatch, or a map[string]interface{}.
 func (p *Program) Run(env interface{}) (interface{}, error) {
 	var chain *sugar.Chain
 	var envMap map[string]interface{}
@@ -45,7 +44,7 @@ func (p *Program) Run(env interface{}) (interface{}, error) {
 	return visitor.eval(p.node)
 }
 
-// Eval parses and executes an expression in one step.
+// Eval parses and executes an expression.
 func Eval(expression string, env interface{}) (interface{}, error) {
 	p, err := Compile(expression)
 	if err != nil {
@@ -157,8 +156,6 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		}
 		chain, ok := left.(*sugar.Chain)
 		if !ok {
-			// Fallback to reflection for non-COM objects if needed? 
-			// For now, return error.
 			return nil, fmt.Errorf("cannot access property on type %T", left)
 		}
 
@@ -210,8 +207,6 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		case *ast.IdentifierNode:
 			if v.envMap != nil {
 				if val, ok := v.envMap[callee.Value]; ok {
-					// If it's a function in map, we could call it here.
-					// For now, assume it's a COM method on the implicit root if not in map.
 					if fn, ok := val.(func(...interface{}) (interface{}, error)); ok {
 						return fn(args...)
 					}
@@ -234,27 +229,19 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		// Handle basic arithmetic
 		return evalBinary(n.Operator, left, right)
 
-	case *ast.IntegerNode:
-		return n.Value, nil
-	case *ast.StringNode:
-		return n.Value, nil
-	case *ast.BoolNode:
-		return n.Value, nil
-	case *ast.FloatNode:
-		return n.Value, nil
-	case *ast.NilNode:
-		return nil, nil
+	case *ast.IntegerNode: return n.Value, nil
+	case *ast.StringNode:  return n.Value, nil
+	case *ast.BoolNode:    return n.Value, nil
+	case *ast.FloatNode:   return n.Value, nil
+	case *ast.NilNode:     return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported node: %T", node)
 	}
 }
 
 func evalBinary(op string, left, right interface{}) (interface{}, error) {
-	// Unwrap Chains if necessary
 	if lc, ok := left.(*sugar.Chain); ok {
 		var err error
 		left, err = lc.Value()
