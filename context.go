@@ -2,35 +2,33 @@
 
 package sugar
 
-import "github.com/go-ole/go-ole"
+import (
+	"context"
 
-// Context manages the lifecycle of multiple Chains.
-// It acts as an "arena" or "pool", collecting chains and releasing them all at once.
-// This simplifies resource management by allowing a single defer statement to clean up
-// multiple objects created within a scope.
+	"github.com/go-ole/go-ole"
+)
+
+type sugarCtxKey struct{}
+var activeSugarKey = sugarCtxKey{}
+
+// Context manages the lifecycle of multiple Chains and implements context.Context.
 type Context struct {
+	context.Context
 	chains []*Chain
 }
 
-// Do creates a new Context, executes the provided function within that context,
-// and ensures that all tracked resources are released when the function completes.
-func Do(fn func(ctx *Context)) {
-	ctx := NewContext()
-	defer ctx.Release()
-	fn(ctx)
-}
-
-// NewContext creates a new Context.
-func NewContext() *Context {
+// NewContext creates a new Context with the given parent context.
+func NewContext(parent context.Context) *Context {
+	if parent == nil {
+		parent = context.Background()
+	}
 	return &Context{
-		chains: make([]*Chain, 0, 4),
+		Context: parent,
+		chains:  make([]*Chain, 0, 4),
 	}
 }
 
 // Track registers an existing Chain with the Context.
-// When the Context is released, this chain will also be released.
-// Returns the passed chain for fluent usage.
-// Example: newChain := ctx.Track(oldChain.Fork())
 func (c *Context) Track(chain *Chain) *Chain {
 	chain.ctx = c
 	c.chains = append(c.chains, chain)
@@ -48,15 +46,11 @@ func (c *Context) GetActive(progID string) *Chain {
 }
 
 // From is a wrapper around sugar.From that automatically tracks the created chain.
-// Note: As with sugar.From, the Context does NOT take ownership of the input 'disp' object itself,
-// but it tracks the Chain wrapper which manages intermediate objects produced by it.
 func (c *Context) From(disp *ole.IDispatch) *Chain {
 	return c.Track(From(disp))
 }
 
 // Release releases all tracked chains in reverse order of registration (LIFO).
-// It returns the first error encountered, but attempts to release all chains.
-// It is safe to call Release multiple times.
 func (c *Context) Release() error {
 	if c.chains == nil {
 		return nil
@@ -69,4 +63,14 @@ func (c *Context) Release() error {
 	}
 	c.chains = nil
 	return firstErr
+}
+
+// Do executes the provided function within a nested scope of this context.
+func (c *Context) Do(fn func(ctx *Context)) error {
+	return With(c).Do(fn)
+}
+
+// Go executes the provided function in a new goroutine, branching from this context.
+func (c *Context) Go(fn func(ctx *Context)) {
+	With(c).Go(fn)
 }

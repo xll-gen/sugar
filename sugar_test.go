@@ -5,108 +5,49 @@ package sugar_test
 import (
 	"fmt"
 	"log"
-	"runtime"
 	"testing"
 
-	"github.com/go-ole/go-ole"
-	"github.com/go-ole/go-ole/oleutil"
 	"github.com/xll-gen/sugar"
 )
 
-// excelTestSetup is a helper to reduce boilerplate in examples.
-func excelTestSetup() (*ole.IDispatch, func()) {
-	runtime.LockOSThread()
-	ole.CoInitialize(0)
+// This example demonstrates the standard usage pattern using sugar.Do.
+// It automatically handles COM initialization, thread locking, and resource cleanup.
+func ExampleDo() {
+	sugar.Do(func(ctx *sugar.Context) {
+		excel := ctx.Create("Excel.Application")
+		if err := excel.Err(); err != nil {
+			// Handle error (e.g., Excel not installed)
+			log.Println("Failed to create Excel:", err)
+			return
+		}
+		// Ensure Excel quits when finished
+		defer excel.Call("Quit")
 
-	unknown, err := oleutil.CreateObject("Excel.Application")
-	if err != nil {
-		// Excel might not be installed. This is not a test failure.
-		// So we just log it and return.
-		log.Println("Failed to create Excel object:", err)
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
-		return nil, nil
-	}
-
-	excel, err := unknown.QueryInterface(ole.IID_IDispatch)
-	if err != nil {
-		log.Fatal(err) // This should not happen if CreateObject succeeded.
-	}
-	unknown.Release()
-
-	// Teardown function
-	cleanup := func() {
-		sugar.From(excel).Call("Quit").Release()
-		excel.Release()
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
-	}
-
-	return excel, cleanup
-}
-
-// This example demonstrates basic chaining with manual resource management.
-func ExampleChain_manual() {
-	excel, cleanup := excelTestSetup()
-	if excel == nil {
-		return // Excel not available
-	}
-	defer cleanup()
-
-	err := sugar.From(excel).
-		Put("Visible", true).
-		Get("Workbooks").
-		Call("Add").
-		Release()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// For demonstration, we can retrieve a value to confirm.
-	name, err := sugar.From(excel).Get("ActiveWorkbook").Get("Name").Value()
-	if err == nil {
-		fmt.Printf("Newly created workbook is named: %s", name)
-	}
-}
-
-// This example demonstrates creating a new COM object with Create.
-func ExampleCreate() {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	ole.CoInitialize(0)
-	defer ole.CoUninitialize()
-
-	err := sugar.Create("Excel.Application").
-		Call("Quit"). // Quit the application immediately.
-		Release()     // Release the application object.
-
-	if err != nil {
-		// Excel might not be installed.
-		log.Println("Failed to run create/quit example:", err)
-		return
-	}
-
-	fmt.Println("Create and Quit successful.")
-	// Output: Create and Quit successful.
+		// Chain methods
+		excel.Put("Visible", true)
+		
+		wb := excel.Get("Workbooks").Call("Add")
+		
+		name, _ := wb.Get("Name").Value()
+		fmt.Printf("Workbook Name: %v\n", name)
+		
+		// All resources (excel, wb, intermediate objects) are released automatically
+		// when the function returns.
+	})
 }
 
 // This example demonstrates getting an active object.
 func ExampleGetActive() {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	ole.CoInitialize(0)
-	defer ole.CoUninitialize()
-
-	// This example will fail if Excel is not running, which is expected in a
-	// test environment where we don't start it first.
-	err := sugar.GetActive("Excel.Application").Release()
-	if err != nil {
-		fmt.Println("GetActive failed as expected.")
-	} else {
-		// This would be the success case.
-		fmt.Println("GetActive succeeded.")
-	}
+	sugar.Do(func(ctx *sugar.Context) {
+		// This example will fail if Excel is not running, which is expected in a
+		// test environment where we don't start it first.
+		excel := ctx.GetActive("Excel.Application")
+		if err := excel.Err(); err != nil {
+			fmt.Println("GetActive failed as expected.")
+		} else {
+			fmt.Println("GetActive succeeded.")
+		}
+	})
 }
 
 func TestChain_Mock(t *testing.T) {
@@ -131,13 +72,12 @@ func TestChain_Mock(t *testing.T) {
 	})
 	
 	t.Run("Create invalid ProgID", func(t *testing.T) {
-		ole.CoInitialize(0)
-		defer ole.CoUninitialize()
-		
-		c := sugar.Create("Invalid.ProgID.That.Does.Not.Exist")
-		if err := c.Err(); err == nil {
-			t.Error("expected error for invalid ProgID, got nil")
-		}
+		// Create requires COM initialization
+		sugar.Do(func(ctx *sugar.Context) {
+			c := ctx.Create("Invalid.ProgID.That.Does.Not.Exist")
+			if err := c.Err(); err == nil {
+				t.Error("expected error for invalid ProgID, got nil")
+			}
+		})
 	})
 }
-

@@ -264,17 +264,19 @@ func (c *Chain) Store() (*ole.IDispatch, error) {
 
 // Release releases the *current* chain's held dispatch object.
 // It does not release "parent" objects because chains are now independent.
+// It is safe to call Release multiple times.
 func (c *Chain) Release() error {
 	if c.disp != nil {
 		c.disp.Release()
-		// c.disp = nil // Cannot zero out if we want to be safe against double free? 
-		// Actually Release is destructive.
+		c.disp = nil
 	}
 	if c.lastResult != nil {
 		c.lastResult.Clear()
 		c.lastResult = nil
 	}
-	return c.err
+	err := c.err
+	c.err = nil
+	return err
 }
 
 func (c *Chain) IsDispatch() bool {
