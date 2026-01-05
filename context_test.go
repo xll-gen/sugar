@@ -72,3 +72,28 @@ func TestContext_Create(t *testing.T) {
 	}
 	// ctx.Release should handle the error-state chain gracefully
 }
+
+func TestContext_Do(t *testing.T) {
+	disp, cleanup := initExcel(t)
+	defer cleanup()
+
+	// Use sugar.Do to manage lifecycle automatically
+	sugar.Do(func(ctx *sugar.Context) {
+		root := ctx.From(disp)
+		
+		// Create a new workbook. 
+		// We use Fork() to get a new chain for the workbook, and ctx.Track() to ensure it's released.
+		// Note: root.Get(...).Call(...) modifies 'root'. To keep 'root' usable or separate, we Fork.
+		// Even if we don't care about 'root', Fork returns a new Chain we can pass to Track.
+		
+		wb := ctx.Track(root.Get("Workbooks").Call("Add").Fork())
+		
+		if err := wb.Put("Saved", true).Err(); err != nil {
+			t.Errorf("failed to set Saved property inside Do: %v", err)
+		}
+		
+		// No need to defer wb.Release() or root.Release()
+	})
+	
+	// If we reached here without panic, Do() worked and Release() was called.
+}

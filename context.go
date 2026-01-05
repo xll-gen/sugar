@@ -12,6 +12,14 @@ type Context struct {
 	chains []*Chain
 }
 
+// Do creates a new Context, executes the provided function within that context,
+// and ensures that all tracked resources are released when the function completes.
+func Do(fn func(ctx *Context)) {
+	ctx := NewContext()
+	defer ctx.Release()
+	fn(ctx)
+}
+
 // NewContext creates a new Context.
 func NewContext() *Context {
 	return &Context{
@@ -47,7 +55,11 @@ func (c *Context) From(disp *ole.IDispatch) *Chain {
 
 // Release releases all tracked chains in reverse order of registration (LIFO).
 // It returns the first error encountered, but attempts to release all chains.
+// It is safe to call Release multiple times.
 func (c *Context) Release() error {
+	if c.chains == nil {
+		return nil
+	}
 	var firstErr error
 	for i := len(c.chains) - 1; i >= 0; i-- {
 		if err := c.chains[i].Release(); err != nil && firstErr == nil {
