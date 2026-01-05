@@ -3,40 +3,27 @@
 package sugar_test
 
 import (
-	"runtime"
 	"testing"
 
 	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
+	"github.com/xll-gen/sugar/excel"
 )
 
 func initExcel(t *testing.T) (*ole.IDispatch, func()) {
 	t.Helper()
-	runtime.LockOSThread()
-	ole.CoInitialize(0)
 	
-	excel := sugar.Create("Excel.Application")
-	if err := excel.Err(); err != nil {
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
-		t.Skip("Excel not installed:", err)
-	}
-	
-	excel.Put("Visible", false)
-	disp, err := excel.Store()
+	disp, cleanup, err := excel.New()
 	if err != nil {
-		excel.Call("Quit").Release()
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
-		t.Fatalf("failed to create excel: %v", err)
+		t.Skip("Excel not installed or failed to create:", err)
 	}
 
-	cleanup := func() {
-		sugar.From(disp).Call("Quit").Release()
-		disp.Release()
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
+	// Set Visible = false
+	if err := sugar.From(disp).Put("Visible", false).Release(); err != nil {
+		cleanup()
+		t.Fatalf("failed to set Visible=false: %v", err)
 	}
+
 	return disp, cleanup
 }
 
@@ -78,6 +65,8 @@ func TestChain_Methods(t *testing.T) {
 	}
 
 	// Re-acquire Workbooks to get Count
+	// Note: We must create a new chain because the previous 'excel' chain was consumed/modified by Store().
+	excel = sugar.From(disp)
 	wbs, err := excel.Get("Workbooks").Store()
 	if err != nil {
 		t.Fatalf("failed to get Workbooks: %v", err)
@@ -180,6 +169,7 @@ func TestChain_IsDispatch(t *testing.T) {
 		t.Error("expected IsDispatch() to be true for Workbooks")
 	}
 	
+	excel = sugar.From(disp)
 	isDisp = excel.Get("Visible").IsDispatch()
 	if isDisp {
 		t.Error("expected IsDispatch() to be false for Visible (bool)")

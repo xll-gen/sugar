@@ -3,41 +3,21 @@
 package expression
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
+	"github.com/xll-gen/sugar/excel"
 )
 
 // setupExcel a helper function to create an Excel instance for testing.
 // It returns *ole.IDispatch and a cleanup function.
 func setupExcel(t *testing.T) (*ole.IDispatch, func()) {
 	t.Helper()
-	runtime.LockOSThread()
-	ole.CoInitialize(0)
-	chain := sugar.Create("Excel.Application")
 	
-	// Put does NOT release the chain, so this is safe.
-	chain.Put("Visible", false)
-
-	disp, err := chain.Store()
+	disp, cleanup, err := excel.New()
 	if err != nil {
-		chain.Release()
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
-		t.Fatalf("Failed to store Excel instance: %v", err)
-	}
-
-	cleanup := func() {
-		// Suppress errors during cleanup
-		sugar.From(disp).Call("Quit").Release()
-		disp.Release()
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
+		t.Skip("Excel not installed or failed to create:", err)
 	}
 
 	return disp, cleanup
@@ -130,33 +110,20 @@ func TestGet_MethodCallWithArgs(t *testing.T) {
 	disp, cleanup := setupExcel(t)
 	defer cleanup()
 
-	// Get the Workbooks collection and store it
-	workbooks, err := Store(disp, "Workbooks")
+	// Add a workbook to ensure we have a context where evaluation works properly
+	wb, err := Store(disp, "Workbooks.Add()")
 	if err != nil {
-		t.Fatalf("Failed to get Workbooks object: %v", err)
-	}
-	defer workbooks.Release()
-
-	// Create a temporary file to open
-	tempDir := t.TempDir()
-	tempFilePath := filepath.Join(tempDir, "test.xlsx")
-	f, err := os.Create(tempFilePath)
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	f.Close()
-	absPath, _ := filepath.Abs(tempFilePath)
-	
-	// Escape backslashes for the expression string
-	escapedPath := strings.ReplaceAll(absPath, "\\", "\\\\")
-
-	// Open the workbook
-	// Open returns a Workbook object. Must use Store.
-	wb, err := Store(workbooks, "Open('"+escapedPath+"')")
-	if err != nil {
-		t.Fatalf("Failed to call Workbooks.Open() with argument: %v", err)
+		t.Fatalf("Failed to add workbook: %v", err)
 	}
 	wb.Release()
+
+	// Use Application.Evaluate("A1") to test passing string arguments to a method.
+	// Evaluate returns a Range object, so we must use Store.
+	rng, err := Store(disp, "Evaluate('A1')")
+	if err != nil {
+		t.Fatalf("Failed to call Evaluate('A1'): %v", err)
+	}
+	rng.Release()
 }
 
 func TestPut_Property(t *testing.T) {

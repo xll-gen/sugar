@@ -87,6 +87,7 @@ func (c *Chain) handleResult(result *ole.VARIANT, err error) *Chain {
 
 	if result.VT == ole.VT_DISPATCH {
 		newDisp := result.ToIDispatch()
+		newDisp.AddRef()
 		c.releaseChain = append(c.releaseChain, newDisp)
 		c.disp = newDisp
 	}
