@@ -223,8 +223,40 @@ func TestChain_IsDispatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ForEach with early exit failed: %v", err)
 		}
-		if count != 1 {
-			t.Errorf("expected count to be 1 after early exit, got %d", count)
+			if count != 1 {
+				t.Errorf("expected count to be 1 after early exit, got %d", count)
+			}
 		}
-	}
-	
+		
+		func TestChain_Fork(t *testing.T) {
+			disp, cleanup := initExcel(t)
+			defer cleanup()
+		
+			// 1. Create a workbook and Fork the chain
+			// The 'excel' chain is now at the 'Workbook' object state.
+			// 'wbChain' is a NEW chain starting at the same 'Workbook' object.
+			excel := sugar.From(disp)
+			wbChain := excel.Get("Workbooks").Call("Add").Fork()
+			
+			if err := wbChain.Err(); err != nil {
+				t.Fatalf("Fork failed: %v", err)
+			}
+			
+			// 2. Use the forked chain
+			// Set "Saved" to true so it doesn't ask to save on close (though our cleanup handles it)
+			err := wbChain.Put("Saved", true).Release()
+			if err != nil {
+				t.Errorf("failed to use forked chain: %v", err)
+			}
+		
+			// 3. The original 'excel' chain is still valid and holds the Workbook object in its release chain.
+			// We should release it as well.
+			// If Fork didn't AddRef, this Release might cause a double free or premature release for the object used by wbChain 
+			// (if we hadn't already released wbChain). 
+			// Since we released wbChain above, the ref count should be handled correctly.
+			err = excel.Release()
+			if err != nil {
+				t.Errorf("failed to release original chain: %v", err)
+			}
+		}
+		

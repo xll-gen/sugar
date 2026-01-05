@@ -224,6 +224,28 @@ func (c *Chain) ForEach(callback func(item *Chain) bool) *Chain {
 	return c
 }
 
+// Fork creates a new independent Chain starting from the current object.
+// The new chain takes ownership of a new reference to the current object (AddRef is called).
+// The caller is responsible for calling Release() on the returned chain.
+// This is useful when you want to branch off a new chain from an intermediate result
+// without breaking the original chain or manually handling Store/From.
+func (c *Chain) Fork() *Chain {
+	if c.err != nil {
+		return &Chain{err: c.err}
+	}
+	if c.disp == nil {
+		return &Chain{err: errors.New("no object to fork")}
+	}
+
+	// AddRef because the new chain will own this object too.
+	c.disp.AddRef()
+
+	return &Chain{
+		disp:         c.disp,
+		releaseChain: []*ole.IDispatch{c.disp},
+	}
+}
+
 // Store is a terminal method that transfers ownership of the current IDispatch
 // object to the caller. The user is responsible for calling Release on the
 // returned object. This method also releases all other resources managed by the
