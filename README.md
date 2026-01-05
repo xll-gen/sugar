@@ -99,14 +99,16 @@ sugar.Do(func(ctx *sugar.Context) error {
 
 ## Expression-Based Automation (Subpackage)
 
-The `expression` package allows you to manipulate complex hierarchies with a single line of code.
+The `expression` package allows you to manipulate complex hierarchies with a single line of code. Intermediate objects created during evaluation are automatically managed.
 
 ```go
 import "github.com/xll-gen/sugar/expression"
 
 sugar.Do(func(ctx *sugar.Context) error {
     excel := ctx.Create("Excel.Application")
-    ctx.Track(excel.Get("Workbooks").Call("Add"))
+    
+    // Create a new workbook (automatically tracked by ctx)
+    excel.Get("Workbooks").Call("Add")
 
 	// Set complex paths at once
     expression.Put(excel, "ActiveSheet.Range('A1').Value", "Hello Sugar!")
