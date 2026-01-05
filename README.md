@@ -73,13 +73,32 @@ workbooks := excel.Get("Workbooks") // 'excel' still points to Application
 wb := workbooks.Call("Add")         // 'workbooks' still points to the Workbooks collection
 ```
 
-### 3. Arena Context
+### 3. Iteration with `ForEach`
+
+You can iterate over COM collections (like Workbooks, Sheets, or Ranges) using the `ForEach` method. Each item is provided as a new `Chain` instance.
+
+```go
+sugar.Do(func(ctx *sugar.Context) error {
+    excel := ctx.Create("Excel.Application")
+    workbooks := excel.Get("Workbooks")
+
+    // Iterate through all open workbooks
+    workbooks.ForEach(func(wb *sugar.Chain) bool {
+        name, _ := wb.Get("Name").Value()
+        fmt.Printf("Workbook: %v\n", name)
+        return true // Return true to continue, false to break
+    })
+    return nil
+})
+```
+
+### 4. Arena Context
 
 The `sugar.Context` acts as a resource collector (Arena). Any object created via `ctx.Create`, `ctx.From`, or derived from a chain is automatically registered with that context and cleaned up when the `Do` block ends.
 
 **Manual `Release()` calls are no longer necessary.**
 
-### 4. Nested Scopes
+### 5. Nested Scopes
 
 If you want to clean up resources for a specific part of a function early, use `ctx.Do` to create a nested arena.
 
