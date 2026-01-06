@@ -7,10 +7,11 @@
 ## Key Features
 
 - **Standard Execution Pattern (`Do`/`Go`):** Automatically handles thread locking (`LockOSThread`) and COM initialization (`CoInitialize`).
-- **Immutable Chain:** All operations (`Get`, `Call`, etc.) return a new Chain instance, preventing side effects on original objects.
+- **Immutable Chain:** All operations (`Get`, `Call`, etc.) return a new `Chain` (Interface) instance, preventing side effects on original objects.
 - **Automatic Resource Management (Arena):** All COM objects created within a context are automatically released in reverse order when the block completes.
 - **Standard `context.Context` Integration:** Leverage Go's standard context features for cancellation, timeouts, and value passing.
 - **Expression-Based Automation:** Navigate complex object hierarchies using a single string expression.
+- **Application Specific Subpackages:** Use type-safe wrappers for popular applications like Excel.
 
 ## Installation
 
@@ -18,9 +19,9 @@
 go get github.com/xll-gen/sugar
 ```
 
-## Quick Start
+## Quick Start (Generic)
 
-A simple example using `sugar.Do` to launch Excel and add a workbook. Resource cleanup is handled automatically.
+A simple example using `sugar.Do` to launch Excel. Resource cleanup is handled automatically.
 
 ```go
 package main
@@ -46,8 +47,6 @@ func main() {
 			Get("Workbooks").
 			Call("Add")
             
-		// When the function returns, excel, workbooks, and the new workbook 
-		// objects are all automatically released.
 		return nil
 	})
 
@@ -55,6 +54,29 @@ func main() {
 		log.Fatalf("Automation failed: %v", err)
 	}
 }
+```
+
+## Excel Subpackage (Type-Safe)
+
+For common applications, `sugar` provides subpackages with friendly methods.
+
+```go
+import "github.com/xll-gen/sugar/excel"
+
+sugar.Do(func(ctx *sugar.Context) error {
+    app := excel.NewApplication(ctx)
+    defer app.Quit()
+
+    app.Put("Visible", true)
+    
+    wb := app.Workbooks().Add()
+    sheet := wb.ActiveSheet()
+    
+    // Type-safe Range manipulation
+    sheet.Range("A1").SetValue("Hello from Sugar!")
+    
+    return nil
+})
 ```
 
 ## Core Concepts
@@ -68,7 +90,7 @@ COM is sensitive to the execution thread. `sugar` provides safe entry points to 
 
 ### 2. Immutable Chain
 
-Methods like `Get`, `Call`, and `ForEach` always return a **NEW `Chain` instance**.
+Methods like `Get`, `Call`, and `ForEach` always return a **NEW `Chain` instance**. `Chain` is now an **interface**, allowing for custom wrappers like the `excel` package.
 
 ```go
 workbooks := excel.Get("Workbooks") // 'excel' still points to Application
@@ -77,7 +99,7 @@ wb := workbooks.Call("Add")         // 'workbooks' still points to the Workbooks
 
 ### 3. Iteration with `ForEach`
 
-You can iterate over COM collections (like Workbooks, Sheets, or Ranges) using the `ForEach` method. Each item is provided as a new `Chain` instance.
+You can iterate over COM collections using the `ForEach` method. Each item is provided as a `Chain` instance.
 
 ```go
 sugar.Do(func(ctx *sugar.Context) error {
@@ -85,7 +107,7 @@ sugar.Do(func(ctx *sugar.Context) error {
     workbooks := excel.Get("Workbooks")
 
     // Iterate through all open workbooks
-    workbooks.ForEach(func(wb *sugar.Chain) error {
+    workbooks.ForEach(func(wb sugar.Chain) error {
         name, _ := wb.Get("Name").Value()
         fmt.Printf("Workbook: %v\n", name)
         return nil // Return nil to continue, sugar.ErrBreak to stop
@@ -102,7 +124,7 @@ The `sugar.Context` acts as a resource collector (Arena). Any object created via
 
 ### 5. Nested Scopes
 
-If you want to clean up resources for a specific part of a function early, use `ctx.Do` to create a nested arena.
+Use `ctx.Do` to create a nested arena for early resource cleanup.
 
 ```go
 sugar.Do(func(ctx *sugar.Context) error {
@@ -120,7 +142,7 @@ sugar.Do(func(ctx *sugar.Context) error {
 
 ## Expression-Based Automation (Subpackage)
 
-The `expression` package allows you to manipulate complex hierarchies with a single line of code. Intermediate objects created during evaluation are automatically managed.
+The `expression` package allows you to manipulate complex hierarchies with a single line of code.
 
 ```go
 import "github.com/xll-gen/sugar/expression"
@@ -128,10 +150,7 @@ import "github.com/xll-gen/sugar/expression"
 sugar.Do(func(ctx *sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     
-    // Create a new workbook (automatically tracked by ctx)
-    excel.Get("Workbooks").Call("Add")
-
-	// Set complex paths at once
+    // Set complex paths at once
     expression.Put(excel, "ActiveSheet.Range('A1').Value", "Hello Sugar!")
     
     // Read values
