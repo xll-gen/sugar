@@ -11,7 +11,20 @@ import (
 )
 
 // Chain provides a fluent interface for chaining OLE operations.
-type Chain struct {
+type Chain interface {
+	Get(prop string, params ...interface{}) Chain
+	Call(method string, params ...interface{}) Chain
+	Put(prop string, params ...interface{}) Chain
+	ForEach(callback func(item Chain) error) Chain
+	Fork() Chain
+	Store() (*ole.IDispatch, error)
+	Release() error
+	IsDispatch() bool
+	Value() (interface{}, error)
+	Err() error
+}
+
+type chain struct {
 	disp       *ole.IDispatch
 	err        error
 	lastResult *ole.VARIANT
@@ -19,57 +32,57 @@ type Chain struct {
 }
 
 // From starts a new chain with the given IDispatch.
-func From(disp *ole.IDispatch) *Chain {
+func From(disp *ole.IDispatch) Chain {
 	if disp != nil {
 		disp.AddRef()
 	}
-	return &Chain{
+	return &chain{
 		disp: disp,
 	}
 }
 
 // Create starts a new chain by creating a new COM object from the given ProgID.
-func Create(progID string) *Chain {
+func Create(progID string) Chain {
 	unknown, err := oleutil.CreateObject(progID)
 	if err != nil {
-		return &Chain{err: err}
+		return &chain{err: err}
 	}
 
 	disp, err := unknown.QueryInterface(ole.IID_IDispatch)
 	unknown.Release()
 	if err != nil {
-		return &Chain{err: err}
+		return &chain{err: err}
 	}
 
-	return &Chain{
+	return &chain{
 		disp: disp,
 	}
 }
 
 // GetActive starts a new chain by attaching to a running COM object.
-func GetActive(progID string) *Chain {
+func GetActive(progID string) Chain {
 	unknown, err := oleutil.GetActiveObject(progID)
 	if err != nil {
-		return &Chain{err: err}
+		return &chain{err: err}
 	}
 
 	disp, err := unknown.QueryInterface(ole.IID_IDispatch)
 	unknown.Release()
 	if err != nil {
-		return &Chain{err: err}
+		return &chain{err: err}
 	}
 
-	return &Chain{
+	return &chain{
 		disp: disp,
 	}
 }
 
-func (c *Chain) handleResult(result *ole.VARIANT, err error) *Chain {
+func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 	if err != nil {
-		return &Chain{err: err, ctx: c.ctx}
+		return &chain{err: err, ctx: c.ctx}
 	}
 
-	newChain := &Chain{
+	newChain := &chain{
 		disp:       c.disp,
 		lastResult: result,
 		ctx:        c.ctx,
@@ -89,68 +102,75 @@ func (c *Chain) handleResult(result *ole.VARIANT, err error) *Chain {
 }
 
 // Get retrieves a property and returns a NEW Chain.
-func (c *Chain) Get(prop string, params ...interface{}) *Chain {
+func (c *chain) Get(prop string, params ...interface{}) Chain {
 	if c.err != nil {
-		return &Chain{err: c.err, ctx: c.ctx}
+		return &chain{err: c.err, ctx: c.ctx}
 	}
 	if c.disp == nil {
-		return &Chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
+		return &chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
 	result, err := oleutil.GetProperty(c.disp, prop, params...)
 	return c.handleResult(result, err)
 }
 
 // Call executes a method and returns a NEW Chain.
-func (c *Chain) Call(method string, params ...interface{}) *Chain {
+func (c *chain) Call(method string, params ...interface{}) Chain {
 	if c.err != nil {
-		return &Chain{err: c.err, ctx: c.ctx}
+		return &chain{err: c.err, ctx: c.ctx}
 	}
 	if c.disp == nil {
-		return &Chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
+		return &chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
 	result, err := oleutil.CallMethod(c.disp, method, params...)
 	return c.handleResult(result, err)
 }
 
 // Put sets a property and returns the chain.
-func (c *Chain) Put(prop string, params ...interface{}) *Chain {
+func (c *chain) Put(prop string, params ...interface{}) Chain {
 	if c.err != nil || c.disp == nil {
 		return c
 	}
 
 	_, err := oleutil.PutProperty(c.disp, prop, params...)
 	if err != nil {
-		return &Chain{err: err, ctx: c.ctx, disp: c.disp}
+		return &chain{err: err, ctx: c.ctx, disp: c.disp}
 	}
 	
 	return c
 }
 
-// ForEach iterates over a collection.
-func (c *Chain) ForEach(callback func(item *Chain) bool) *Chain {
+var (
+	// ErrBreak is used to break out of a ForEach loop without an error.
+	ErrBreak = errors.New("break")
+)
+
+// ForEach executes a callback for each item in a COM collection.
+// If the callback returns a non-nil error, the iteration stops.
+// Returning ErrBreak stops the iteration without recording an error in the Chain.
+func (c *chain) ForEach(callback func(item Chain) error) Chain {
 	if c.err != nil || c.disp == nil {
 		return c
 	}
 
 	enumVar, err := oleutil.GetProperty(c.disp, "_NewEnum")
 	if err != nil {
-		return &Chain{err: err, ctx: c.ctx}
+		return &chain{err: err, ctx: c.ctx}
 	}
 	defer enumVar.Clear()
 
 	if enumVar.VT != ole.VT_UNKNOWN && enumVar.VT != ole.VT_DISPATCH {
-		return &Chain{err: errors.New("_NewEnum is not object"), ctx: c.ctx}
+		return &chain{err: errors.New("_NewEnum is not object"), ctx: c.ctx}
 	}
-	
+
 	unknown := enumVar.ToIUnknown()
 	if unknown == nil {
-		return &Chain{err: errors.New("_NewEnum nil"), ctx: c.ctx}
+		return &chain{err: errors.New("_NewEnum nil"), ctx: c.ctx}
 	}
 
 	iid, _ := ole.IIDFromString("{00020404-0000-0000-C000-000000000046}")
 	enumRaw, err := unknown.QueryInterface(iid)
 	if err != nil {
-		return &Chain{err: err, ctx: c.ctx}
+		return &chain{err: err, ctx: c.ctx}
 	}
 	defer enumRaw.Release()
 
@@ -161,12 +181,12 @@ func (c *Chain) ForEach(callback func(item *Chain) bool) *Chain {
 		if err != nil || fetched == 0 {
 			break
 		}
-		
+
 		if itemVar.VT == ole.VT_DISPATCH {
 			itemDisp := itemVar.ToIDispatch()
 			itemDisp.AddRef()
-			
-			itemChain := &Chain{
+
+			itemChain := &chain{
 				disp: itemDisp,
 				ctx:  c.ctx,
 			}
@@ -174,33 +194,35 @@ func (c *Chain) ForEach(callback func(item *Chain) bool) *Chain {
 				c.ctx.Track(itemChain)
 			}
 
-			cont := callback(itemChain)
-			
+			cbErr := callback(itemChain)
+
 			if c.ctx == nil {
 				itemChain.Release()
 			}
-			
-			if !cont {
+
+			if cbErr != nil {
 				itemVar.Clear()
+				if !errors.Is(cbErr, ErrBreak) {
+					return &chain{err: cbErr, ctx: c.ctx}
+				}
 				break
 			}
 		}
 		itemVar.Clear()
 	}
-
 	return c
 }
 
 // Fork creates a new independent reference to the current object.
-func (c *Chain) Fork() *Chain {
+func (c *chain) Fork() Chain {
 	if c.err != nil {
-		return &Chain{err: c.err, ctx: c.ctx}
+		return &chain{err: c.err, ctx: c.ctx}
 	}
 	if c.disp == nil {
-		return &Chain{err: errors.New("nil dispatch"), ctx: c.ctx}
+		return &chain{err: errors.New("nil dispatch"), ctx: c.ctx}
 	}
 	c.disp.AddRef()
-	newChain := &Chain{disp: c.disp, ctx: c.ctx}
+	newChain := &chain{disp: c.disp, ctx: c.ctx}
 	if c.ctx != nil {
 		c.ctx.Track(newChain)
 	}
@@ -208,7 +230,7 @@ func (c *Chain) Fork() *Chain {
 }
 
 // Store transfers ownership of the current dispatch object to the caller.
-func (c *Chain) Store() (*ole.IDispatch, error) {
+func (c *chain) Store() (*ole.IDispatch, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -221,7 +243,7 @@ func (c *Chain) Store() (*ole.IDispatch, error) {
 }
 
 // Release releases the held dispatch object and captures errors.
-func (c *Chain) Release() error {
+func (c *chain) Release() error {
 	if c.disp != nil {
 		c.disp.Release()
 		c.disp = nil
@@ -236,12 +258,12 @@ func (c *Chain) Release() error {
 }
 
 // IsDispatch returns true if the last result is a dispatch object.
-func (c *Chain) IsDispatch() bool {
+func (c *chain) IsDispatch() bool {
 	return c.lastResult != nil && c.lastResult.VT == ole.VT_DISPATCH
 }
 
 // Value retrieves the Go value of the last operation result.
-func (c *Chain) Value() (interface{}, error) {
+func (c *chain) Value() (interface{}, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -255,6 +277,7 @@ func (c *Chain) Value() (interface{}, error) {
 }
 
 // Err returns the first error encountered in the chain.
-func (c *Chain) Err() error {
+func (c *chain) Err() error {
 	return c.err
 }
+

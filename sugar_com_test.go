@@ -3,12 +3,13 @@
 package sugar_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/xll-gen/sugar"
 )
 
-func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
+func setupExcel(t *testing.T, ctx *sugar.Context) sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
 		t.Logf("CRITICAL: excel.Create failed: %v", err)
@@ -178,9 +179,9 @@ func TestChain_ForEach(t *testing.T) {
 		}
 
 		count := 0
-		err := wbs.ForEach(func(item *sugar.Chain) bool {
+		err := wbs.ForEach(func(item sugar.Chain) error {
 			count++
-			return true
+			return nil
 		}).Err()
 
 		if err != nil {
@@ -191,16 +192,24 @@ func TestChain_ForEach(t *testing.T) {
 		}
 
 		count = 0
-		err = wbs.ForEach(func(item *sugar.Chain) bool {
+		err = wbs.ForEach(func(item sugar.Chain) error {
 			count++
-			return false
+			return sugar.ErrBreak
 		}).Err()
 
 		if err != nil {
-			t.Fatalf("ForEach with early exit failed: %v", err)
+			t.Fatalf("ForEach with ErrBreak failed: %v", err)
 		}
 		if count != 1 {
-			t.Errorf("expected count to be 1 after early exit, got %d", count)
+			t.Errorf("expected count 1 with ErrBreak, got %d", count)
+		}
+
+		err = wbs.ForEach(func(item sugar.Chain) error {
+			return errors.New("custom error")
+		}).Err()
+
+		if err == nil || err.Error() != "custom error" {
+			t.Errorf("expected custom error, got %v", err)
 		}
 		return nil
 	})

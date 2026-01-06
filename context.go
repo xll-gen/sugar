@@ -14,7 +14,7 @@ var activeSugarKey = sugarCtxKey{}
 // Context manages the lifecycle of multiple Chains and implements context.Context.
 type Context struct {
 	context.Context
-	chains []*Chain
+	chains []Chain
 }
 
 // NewContext creates a new Context with the given parent.
@@ -24,31 +24,34 @@ func NewContext(parent context.Context) *Context {
 	}
 	return &Context{
 		Context: parent,
-		chains:  make([]*Chain, 0, 4),
+		chains:  make([]Chain, 0, 4),
 	}
 }
 
 // Track registers a Chain with the Context for automatic release.
-func (c *Context) Track(chain *Chain) *Chain {
-	chain.ctx = c
-	c.chains = append(c.chains, chain)
-	return chain
+func (c *Context) Track(ch Chain) Chain {
+	if impl, ok := ch.(*chain); ok {
+		impl.ctx = c
+	}
+	c.chains = append(c.chains, ch)
+	return ch
 }
 
 // Create is a wrapper around sugar.Create that automatically tracks the chain.
-func (c *Context) Create(progID string) *Chain {
+func (c *Context) Create(progID string) Chain {
 	return c.Track(Create(progID))
 }
 
 // GetActive is a wrapper around sugar.GetActive that automatically tracks the chain.
-func (c *Context) GetActive(progID string) *Chain {
+func (c *Context) GetActive(progID string) Chain {
 	return c.Track(GetActive(progID))
 }
 
 // From is a wrapper around sugar.From that automatically tracks the chain.
-func (c *Context) From(disp *ole.IDispatch) *Chain {
+func (c *Context) From(disp *ole.IDispatch) Chain {
 	return c.Track(From(disp))
 }
+
 
 // Release releases all tracked chains in LIFO order.
 func (c *Context) Release() error {

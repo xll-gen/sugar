@@ -28,11 +28,11 @@ func Compile(expression string) (*Program, error) {
 
 // Run executes a compiled Program against an environment.
 func (p *Program) Run(env interface{}) (interface{}, error) {
-	var chain *sugar.Chain
+	var chain sugar.Chain
 	var envMap map[string]interface{}
 
 	switch v := env.(type) {
-	case *sugar.Chain:
+	case sugar.Chain:
 		chain = v
 	case *ole.IDispatch:
 		chain = sugar.From(v)
@@ -60,7 +60,7 @@ func Get(obj interface{}, expression string) (interface{}, error) {
 		return nil, err
 	}
 
-	if finalChain, ok := result.(*sugar.Chain); ok {
+	if finalChain, ok := result.(sugar.Chain); ok {
 		if err := finalChain.Err(); err != nil {
 			return nil, err
 		}
@@ -77,7 +77,7 @@ func Store(obj interface{}, expression string) (*ole.IDispatch, error) {
 		return nil, err
 	}
 
-	if finalChain, ok := result.(*sugar.Chain); ok {
+	if finalChain, ok := result.(sugar.Chain); ok {
 		if err := finalChain.Err(); err != nil {
 			return nil, err
 		}
@@ -99,10 +99,10 @@ func Put(obj interface{}, expression string, value interface{}) error {
 		return fmt.Errorf("invalid Put expression: must be property access")
 	}
 
-	var chain *sugar.Chain
+	var chain sugar.Chain
 	var envMap map[string]interface{}
 	switch v := obj.(type) {
-	case *sugar.Chain:
+	case sugar.Chain:
 		chain = v
 	case *ole.IDispatch:
 		chain = sugar.From(v)
@@ -116,7 +116,7 @@ func Put(obj interface{}, expression string, value interface{}) error {
 		return err
 	}
 
-	parentChain, ok := parentObj.(*sugar.Chain)
+	parentChain, ok := parentObj.(sugar.Chain)
 	if !ok {
 		return fmt.Errorf("parent is not COM object: %T", parentObj)
 	}
@@ -132,7 +132,7 @@ func Put(obj interface{}, expression string, value interface{}) error {
 }
 
 type comVisitor struct {
-	initialChain *sugar.Chain
+	initialChain sugar.Chain
 	envMap       map[string]interface{}
 }
 
@@ -154,7 +154,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		chain, ok := left.(*sugar.Chain)
+		chain, ok := left.(sugar.Chain)
 		if !ok {
 			return nil, fmt.Errorf("cannot access property on type %T", left)
 		}
@@ -174,7 +174,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
-			if argChain, ok := argVal.(*sugar.Chain); ok {
+			if argChain, ok := argVal.(sugar.Chain); ok {
 				val, err := argChain.Value()
 				if err != nil {
 					return nil, fmt.Errorf("arg %d error: %w", i, err)
@@ -191,7 +191,7 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
-			chain, ok := obj.(*sugar.Chain)
+			chain, ok := obj.(sugar.Chain)
 			if !ok {
 				return nil, fmt.Errorf("cannot call method on type %T", obj)
 			}
@@ -242,14 +242,14 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 }
 
 func evalBinary(op string, left, right interface{}) (interface{}, error) {
-	if lc, ok := left.(*sugar.Chain); ok {
+	if lc, ok := left.(sugar.Chain); ok {
 		var err error
 		left, err = lc.Value()
 		if err != nil {
 			return nil, err
 		}
 	}
-	if rc, ok := right.(*sugar.Chain); ok {
+	if rc, ok := right.(sugar.Chain); ok {
 		var err error
 		right, err = rc.Value()
 		if err != nil {

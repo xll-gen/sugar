@@ -8,7 +8,7 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-func setupExcel(t *testing.T, ctx *sugar.Context) *sugar.Chain {
+func setupExcel(t *testing.T, ctx *sugar.Context) sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
 		t.Skip("Excel not installed or failed to create:", err)
