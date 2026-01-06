@@ -1,4 +1,4 @@
-# sugar: A fluent, immutable COM automation library for Go
+# sugar: Sweeten your Windows automation.
 
 `sugar` is a flexible and safe Go library for Component Object Model (COM) automation on Windows. Built on top of the powerful `go-ole` library, it introduces **Immutability** and the **Arena (Context) pattern** to help you write clean code without worrying about resource leaks.
 

@@ -4,7 +4,7 @@ This document provides guidance for developers and AI agents working on the `sug
 
 ## 1. Project Overview
 
-`sugar` is a Go library providing a fluent, immutable API for Component Object Model (COM) automation on Windows. It uses an **Arena (Context) pattern** for automatic resource management, ensuring thread safety and preventing memory leaks without manual boilerplate.
+`sugar` is a Go library designed to **sweeten your Windows automation**. It provides a fluent, immutable API for Component Object Model (COM) automation, using an **Arena (Context) pattern** for automatic resource management.
 
 **Platform Constraint:** Windows-specific. All source files must include `//go:build windows`.
 
