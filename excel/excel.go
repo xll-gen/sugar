@@ -106,6 +106,7 @@ func (w *worksheets) Item(index interface{}) Worksheet {
 type Worksheet interface {
 	sugar.Chain
 	Range(cell1 interface{}, cell2 ...interface{}) Range
+	Cells(row, col interface{}) Range
 }
 
 type worksheet struct {
@@ -119,10 +120,15 @@ func (w *worksheet) Range(cell1 interface{}, cell2 ...interface{}) Range {
 	return &excelRange{w.Get("Range", cell1)}
 }
 
+func (w *worksheet) Cells(row, col interface{}) Range {
+	return &excelRange{w.Get("Cells", row, col)}
+}
+
 // Range represents a Range object.
 type Range interface {
 	sugar.Chain
 	SetValue(value interface{}) Range
+	Cells(row, col interface{}) Range
 }
 
 type excelRange struct {
@@ -131,4 +137,8 @@ type excelRange struct {
 
 func (r *excelRange) SetValue(value interface{}) Range {
 	return &excelRange{r.Put("Value", value)}
+}
+
+func (r *excelRange) Cells(row, col interface{}) Range {
+	return &excelRange{r.Get("Cells", row, col)}
 }

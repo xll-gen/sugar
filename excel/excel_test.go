@@ -35,13 +35,19 @@ func TestExcel_Package(t *testing.T) {
 			t.Fatalf("failed to set value: %v", err)
 		}
 
-		val, err := rng.Get("Value").Value()
-		if err != nil {
-			t.Fatalf("failed to get value: %v", err)
+		// Test Cells on Worksheet
+		cell := sheet.Cells(2, 2) // B2
+		cell.SetValue("Cell B2")
+		if err := cell.Err(); err != nil {
+			t.Fatalf("failed to set value via Cells: %v", err)
 		}
 
-		if val != "Sugar Excel" {
-			t.Errorf("expected 'Sugar Excel', got %v", val)
+		val, err := cell.Get("Value").Value()
+		if err != nil {
+			t.Fatalf("failed to get value from B2: %v", err)
+		}
+		if val != "Cell B2" {
+			t.Errorf("expected 'Cell B2', got %v", val)
 		}
 
 		return nil
