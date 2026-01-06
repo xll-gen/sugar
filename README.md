@@ -1,5 +1,7 @@
 # sugar: Sweeten your Windows automation.
 
+> **Warning:** This project is currently in the **Alpha stage (v0.x.x)**. APIs are subject to change and breaking changes may occur until the v1.0.0 release.
+
 `sugar` is a flexible and safe Go library for Component Object Model (COM) automation on Windows. Built on top of the powerful `go-ole` library, it introduces **Immutability** and the **Arena (Context) pattern** to help you write clean code without worrying about resource leaks.
 
 ## Key Features
@@ -83,10 +85,10 @@ sugar.Do(func(ctx *sugar.Context) error {
     workbooks := excel.Get("Workbooks")
 
     // Iterate through all open workbooks
-    workbooks.ForEach(func(wb *sugar.Chain) bool {
+    workbooks.ForEach(func(wb *sugar.Chain) error {
         name, _ := wb.Get("Name").Value()
         fmt.Printf("Workbook: %v\n", name)
-        return true // Return true to continue, false to break
+        return nil // Return nil to continue, sugar.ErrBreak to stop
     })
     return nil
 })
