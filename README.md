@@ -16,7 +16,7 @@
 ## Installation
 
 ```sh
-go get github.com/xll-gen/sugar
+go get -u github.com/xll-gen/sugar
 ```
 
 ## Quick Start (Generic)
