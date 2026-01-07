@@ -11,16 +11,57 @@ import (
 )
 
 // Chain provides a fluent interface for chaining OLE operations.
+// It handles error propagation, allowing you to call multiple methods
+// and check the error once at the end via Err().
 type Chain interface {
+	// Get retrieves a property from the current COM object and returns a NEW Chain
+	// representing the property value. If the property is a COM object, it will
+	// be automatically tracked if a Context is present.
 	Get(prop string, params ...interface{}) Chain
+
+	// Call executes a method on the current COM object and returns a NEW Chain
+	// representing the return value. If the value is a COM object, it will
+	// be automatically tracked if a Context is present.
 	Call(method string, params ...interface{}) Chain
+
+	// Put sets a property on the current COM object. It returns the same Chain
+	// instance (or an error-carrying Chain) to allow further operations.
 	Put(prop string, params ...interface{}) Chain
+
+	// ForEach iterates over a COM collection (any object that implements IEnumVARIANT).
+	// For each item, the callback is executed with a new Chain instance.
+	//
+	// To stop iteration:
+	//   - Return nil to continue to the next item.
+	//   - Return ErrForEachBreak (or an error wrapping it) to stop iteration.
+	//   - Return any other error to stop and propagate the error to the parent Chain.
+	//
+	// NOTE: The break error is recorded in the Chain and should be checked manually
+	// by the caller via Err() if they need to distinguish it from other errors.
 	ForEach(callback func(item Chain) error) Chain
+
+	// Fork creates a new independent reference to the current COM object.
+	// Both the original and the forked Chain will point to the same object
+	// but are managed as separate entries in the Context's arena.
 	Fork() Chain
+
+	// Store increases the reference count and returns the raw *ole.IDispatch.
+	// The caller is responsible for calling Release() on the returned object
+	// if it's not managed by sugar.Context.
 	Store() (*ole.IDispatch, error)
+
+	// Release manually releases the held COM object. Usually, this is handled
+	// automatically by the sugar.Context, but can be used for early cleanup.
 	Release() error
+
+	// IsDispatch returns true if the last operation's result is a COM object (IDispatch).
 	IsDispatch() bool
+
+	// Value retrieves the underlying Go value of the last operation's result.
+	// Returns an error if the result is a COM object (use Store() instead).
 	Value() (interface{}, error)
+
+	// Err returns the first error encountered in the chain of operations.
 	Err() error
 }
 
@@ -139,14 +180,28 @@ func (c *chain) Put(prop string, params ...interface{}) Chain {
 	return c
 }
 
+// ForEachBreak is returned when ForEach iteration is explicitly broken.
+type ForEachBreak struct {
+	Value interface{}
+}
+
+func (e *ForEachBreak) Error() string {
+	return "foreach break"
+}
+
+func (e *ForEachBreak) Is(target error) bool {
+	_, ok := target.(*ForEachBreak)
+	return ok
+}
+
 var (
-	// ErrBreak is used to break out of a ForEach loop without an error.
-	ErrBreak = errors.New("break")
+	// ErrForEachBreak is used to break out of a ForEach loop.
+	ErrForEachBreak error = &ForEachBreak{}
 )
 
 // ForEach executes a callback for each item in a COM collection.
-// If the callback returns a non-nil error, the iteration stops.
-// Returning ErrBreak stops the iteration without recording an error in the Chain.
+// If the callback returns a non-nil error, the iteration stops and the error
+// is recorded in the returned Chain.
 func (c *chain) ForEach(callback func(item Chain) error) Chain {
 	if c.err != nil || c.disp == nil {
 		return c
@@ -202,10 +257,7 @@ func (c *chain) ForEach(callback func(item Chain) error) Chain {
 
 			if cbErr != nil {
 				itemVar.Clear()
-				if !errors.Is(cbErr, ErrBreak) {
-					return &chain{err: cbErr, ctx: c.ctx}
-				}
-				break
+				return &chain{err: cbErr, ctx: c.ctx}
 			}
 		}
 		itemVar.Clear()

@@ -194,14 +194,27 @@ func TestChain_ForEach(t *testing.T) {
 		count = 0
 		err = wbs.ForEach(func(item sugar.Chain) error {
 			count++
-			return sugar.ErrBreak
+			return sugar.ErrForEachBreak
 		}).Err()
 
-		if err != nil {
-			t.Fatalf("ForEach with ErrBreak failed: %v", err)
+		if !errors.Is(err, sugar.ErrForEachBreak) {
+			t.Fatalf("expected ErrForEachBreak, got %v", err)
 		}
 		if count != 1 {
-			t.Errorf("expected count 1 with ErrBreak, got %d", count)
+			t.Errorf("expected count 1 with ErrForEachBreak, got %d", count)
+		}
+
+		// Test with additional information
+		err = wbs.ForEach(func(item sugar.Chain) error {
+			return &sugar.ForEachBreak{Value: "captured data"}
+		}).Err()
+
+		var feBreak *sugar.ForEachBreak
+		if !errors.As(err, &feBreak) {
+			t.Fatalf("expected ForEachBreak, got %v", err)
+		}
+		if feBreak.Value != "captured data" {
+			t.Errorf("expected 'captured data', got %v", feBreak.Value)
 		}
 
 		err = wbs.ForEach(func(item sugar.Chain) error {

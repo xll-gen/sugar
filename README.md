@@ -99,7 +99,7 @@ wb := workbooks.Call("Add")         // 'workbooks' still points to the Workbooks
 
 ### 3. Iteration with `ForEach`
 
-You can iterate over COM collections using the `ForEach` method. Each item is provided as a `Chain` instance.
+You can iterate over COM collections using the `ForEach` method. Each item is provided as a `Chain` instance. Returning `sugar.ErrForEachBreak` stops the iteration and the error is recorded in the Chain.
 
 ```go
 sugar.Do(func(ctx *sugar.Context) error {
@@ -107,11 +107,17 @@ sugar.Do(func(ctx *sugar.Context) error {
     workbooks := excel.Get("Workbooks")
 
     // Iterate through all open workbooks
-    workbooks.ForEach(func(wb sugar.Chain) error {
+    err := workbooks.ForEach(func(wb sugar.Chain) error {
         name, _ := wb.Get("Name").Value()
         fmt.Printf("Workbook: %v\n", name)
-        return nil // Return nil to continue, sugar.ErrBreak to stop
-    })
+        
+        // Stop after first item if needed
+        return sugar.ErrForEachBreak
+    }).Err()
+
+    if errors.Is(err, sugar.ErrForEachBreak) {
+        // Handled break
+    }
     return nil
 })
 ```
