@@ -9,7 +9,7 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-func setupExcel(t *testing.T, ctx *sugar.Context) sugar.Chain {
+func setupExcel(t *testing.T, ctx sugar.Context) sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
 		t.Logf("CRITICAL: excel.Create failed: %v", err)
@@ -22,7 +22,7 @@ func setupExcel(t *testing.T, ctx *sugar.Context) sugar.Chain {
 }
 
 func TestChain_Properties(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -44,7 +44,7 @@ func TestChain_Properties(t *testing.T) {
 }
 
 func TestChain_Methods(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -81,7 +81,7 @@ func TestChain_Methods(t *testing.T) {
 }
 
 func TestChain_Store(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -117,7 +117,7 @@ func TestChain_Store(t *testing.T) {
 }
 
 func TestChain_Errors(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -131,7 +131,7 @@ func TestChain_Errors(t *testing.T) {
 }
 
 func TestChain_ValueRestrictions(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -149,7 +149,7 @@ func TestChain_ValueRestrictions(t *testing.T) {
 }
 
 func TestChain_IsDispatch(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -168,7 +168,7 @@ func TestChain_IsDispatch(t *testing.T) {
 }
 
 func TestChain_ForEach(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -229,7 +229,7 @@ func TestChain_ForEach(t *testing.T) {
 }
 
 func TestChain_Fork(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")

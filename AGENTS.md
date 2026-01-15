@@ -15,7 +15,7 @@ This document provides guidance for developers and AI agents working on the `sug
 The library enforces a standard way to execute COM operations to ensure `runtime.LockOSThread()` and `ole.CoInitialize()` are handled correctly.
 
 ```go
-sugar.Do(func(ctx *sugar.Context) error {
+sugar.Do(func(ctx sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     // ... work with excel ...
     return nil
@@ -24,7 +24,7 @@ sugar.Do(func(ctx *sugar.Context) error {
 
 *   **`sugar.Do`**: Executes synchronously in the current goroutine.
 *   **`sugar.Go`**: Executes in a new goroutine (new OS thread).
-*   **Nested Scopes**: Use `ctx.Do(func(innerCtx *sugar.Context) error { ... })` to create local cleanup scopes.
+*   **Nested Scopes**: Use `ctx.Do(func(innerCtx sugar.Context) error { ... })` to create local cleanup scopes.
 
 ### 2.2 The Immutable `Chain`
 
@@ -47,7 +47,7 @@ Every `Chain` created via a `sugar.Context` (or derived from one) is automatical
 `sugar.Context` implements the standard `context.Context` interface. You can use it for cancellation, timeouts, and passing values.
 
 ```go
-sugar.With(parentCtx).Do(func(ctx *sugar.Context) error {
+sugar.With(parentCtx).Do(func(ctx sugar.Context) error {
     select {
     case <-ctx.Done():
         return ctx.Err()

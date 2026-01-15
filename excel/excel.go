@@ -35,14 +35,15 @@ func (a *application) Quit() error {
 }
 
 // NewApplication creates a new Excel instance.
-func NewApplication(ctx *sugar.Context) Application {
+func NewApplication(ctx sugar.Context) Application {
 	return &application{ctx.Create("Excel.Application")}
 }
 
 // GetApplication attaches to a running Excel instance.
-func GetApplication(ctx *sugar.Context) Application {
+func GetApplication(ctx sugar.Context) Application {
 	return &application{ctx.GetActive("Excel.Application")}
 }
+
 
 // Workbooks represents the Workbooks collection.
 type Workbooks interface {

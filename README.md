@@ -33,7 +33,7 @@ import (
 
 func main() {
 	// sugar.Do guarantees COM initialization and automatic resource cleanup.
-	err := sugar.Do(func(ctx *sugar.Context) error {
+	err := sugar.Do(func(ctx sugar.Context) error {
 		excel := ctx.Create("Excel.Application")
 		if err := excel.Err(); err != nil {
 			return err
@@ -63,7 +63,7 @@ For common applications, `sugar` provides subpackages with friendly methods.
 ```go
 import "github.com/xll-gen/sugar/excel"
 
-sugar.Do(func(ctx *sugar.Context) error {
+sugar.Do(func(ctx sugar.Context) error {
     app := excel.NewApplication(ctx)
     defer app.Quit()
 
@@ -102,7 +102,7 @@ wb := workbooks.Call("Add")         // 'workbooks' still points to the Workbooks
 You can iterate over COM collections using the `ForEach` method. Each item is provided as a `Chain` instance. Returning `sugar.ErrForEachBreak` stops the iteration and the error is recorded in the Chain.
 
 ```go
-sugar.Do(func(ctx *sugar.Context) error {
+sugar.Do(func(ctx sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     workbooks := excel.Get("Workbooks")
 
@@ -133,10 +133,10 @@ The `sugar.Context` acts as a resource collector (Arena). Any object created via
 Use `ctx.Do` to create a nested arena for early resource cleanup.
 
 ```go
-sugar.Do(func(ctx *sugar.Context) error {
+sugar.Do(func(ctx sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     
-    ctx.Do(func(innerCtx *sugar.Context) error {
+    ctx.Do(func(innerCtx sugar.Context) error {
         // Objects created in this block are released immediately when it ends.
         wb := excel.Get("Workbooks").Call("Add")
         return nil
@@ -153,7 +153,7 @@ The `expression` package allows you to manipulate complex hierarchies with a sin
 ```go
 import "github.com/xll-gen/sugar/expression"
 
-sugar.Do(func(ctx *sugar.Context) error {
+sugar.Do(func(ctx sugar.Context) error {
     excel := ctx.Create("Excel.Application")
     
     // Set complex paths at once

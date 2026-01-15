@@ -69,7 +69,7 @@ type chain struct {
 	disp       *ole.IDispatch
 	err        error
 	lastResult *ole.VARIANT
-	ctx        *Context
+	ctx        Context
 }
 
 // From starts a new chain with the given IDispatch.

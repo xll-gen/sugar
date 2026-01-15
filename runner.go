@@ -21,7 +21,7 @@ func With(ctx context.Context) *Runner {
 }
 
 // Do executes the provided function in the current goroutine.
-func (r *Runner) Do(fn func(ctx *Context) error) (err error) {
+func (r *Runner) Do(fn func(ctx Context) error) (err error) {
 	if r.parent == nil {
 		r.parent = context.Background()
 	}
@@ -52,7 +52,7 @@ func (r *Runner) Do(fn func(ctx *Context) error) (err error) {
 }
 
 // Go executes the provided function in a new goroutine.
-func (r *Runner) Go(fn func(ctx *Context) error) {
+func (r *Runner) Go(fn func(ctx Context) error) {
 	go func() {
 		runner := &Runner{
 			parent:    r.parent,
@@ -63,11 +63,11 @@ func (r *Runner) Go(fn func(ctx *Context) error) {
 }
 
 // Do executes the function with a Background context.
-func Do(fn func(ctx *Context) error) error {
+func Do(fn func(ctx Context) error) error {
 	return With(context.Background()).Do(fn)
 }
 
 // Go executes the function in a new goroutine with a Background context.
-func Go(fn func(ctx *Context) error) {
+func Go(fn func(ctx Context) error) {
 	With(context.Background()).Go(fn)
 }

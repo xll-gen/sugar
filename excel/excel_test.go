@@ -9,7 +9,7 @@ import (
 )
 
 func TestExcel_Package(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		app := excel.NewApplication(ctx)
 		if err := app.Err(); err != nil {
 			t.Skip("Excel not installed:", err)

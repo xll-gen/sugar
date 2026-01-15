@@ -8,7 +8,7 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-func setupExcel(t *testing.T, ctx *sugar.Context) sugar.Chain {
+func setupExcel(t *testing.T, ctx sugar.Context) sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
 		t.Skip("Excel not installed or failed to create:", err)
@@ -36,7 +36,7 @@ func TestEval_Basic(t *testing.T) {
 }
 
 func TestEval_CompileRun(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -58,7 +58,7 @@ func TestEval_CompileRun(t *testing.T) {
 }
 
 func TestEval_EnvMap(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
@@ -88,7 +88,7 @@ func TestEval_EnvMap(t *testing.T) {
 }
 
 func TestGet_Legacy(t *testing.T) {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := setupExcel(t, ctx)
 		if excel == nil { return nil }
 		defer excel.Put("DisplayAlerts", false).Call("Quit")

@@ -11,7 +11,7 @@ import (
 )
 
 func ExampleDo() {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := ctx.Create("Excel.Application")
 		if err := excel.Err(); err != nil {
 			log.Println("Failed to create Excel:", err)
@@ -28,7 +28,7 @@ func ExampleDo() {
 }
 
 func ExampleGetActive() {
-	sugar.Do(func(ctx *sugar.Context) error {
+	sugar.Do(func(ctx sugar.Context) error {
 		excel := ctx.GetActive("Excel.Application")
 		if err := excel.Err(); err != nil {
 			fmt.Println("GetActive failed as expected.")
@@ -56,7 +56,7 @@ func TestChain_Mock(t *testing.T) {
 	})
 	
 	t.Run("Create invalid ProgID", func(t *testing.T) {
-		sugar.Do(func(ctx *sugar.Context) error {
+		sugar.Do(func(ctx sugar.Context) error {
 			c := ctx.Create("Invalid.ProgID.That.Does.Not.Exist")
 			if err := c.Err(); err == nil {
 				t.Error("expected error for invalid ProgID, got nil")
