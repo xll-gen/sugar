@@ -70,6 +70,7 @@ type chain struct {
 	err        error
 	lastResult *ole.VARIANT
 	ctx        Context
+	isRoot     bool // Indicates if this chain "owns" the disp
 }
 
 // From starts a new chain with the given IDispatch.
@@ -78,7 +79,8 @@ func From(disp *ole.IDispatch) Chain {
 		disp.AddRef()
 	}
 	return &chain{
-		disp: disp,
+		disp:   disp,
+		isRoot: true,
 	}
 }
 
@@ -96,7 +98,8 @@ func Create(progID string) Chain {
 	}
 
 	return &chain{
-		disp: disp,
+		disp:   disp,
+		isRoot: true,
 	}
 }
 
@@ -114,7 +117,8 @@ func GetActive(progID string) Chain {
 	}
 
 	return &chain{
-		disp: disp,
+		disp:   disp,
+		isRoot: true,
 	}
 }
 
@@ -124,19 +128,24 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 	}
 
 	newChain := &chain{
-		disp:       c.disp,
 		lastResult: result,
 		ctx:        c.ctx,
+		isRoot:     false, // Derived chains don't own the IDispatch
 	}
 
 	if result.VT == ole.VT_DISPATCH {
 		newDisp := result.ToIDispatch()
-		newDisp.AddRef()
+		newDisp.AddRef() // AddRef to balance the Release in lastResult.Clear()
 		newChain.disp = newDisp
-		
-		if c.ctx != nil {
-			c.ctx.Track(newChain)
-		}
+		newChain.isRoot = true // This new chain now owns the IDispatch from the result
+	} else {
+		// For non-dispatch results, the new chain still refers to the old object
+		newChain.disp = c.disp
+	}
+
+	// Always track the new chain if in a context, so its lastResult is cleaned up
+	if c.ctx != nil {
+		c.ctx.Track(newChain)
 	}
 
 	return newChain
@@ -296,10 +305,11 @@ func (c *chain) Store() (*ole.IDispatch, error) {
 
 // Release releases the held dispatch object and captures errors.
 func (c *chain) Release() error {
-	if c.disp != nil {
+	if c.isRoot && c.disp != nil {
 		c.disp.Release()
-		c.disp = nil
 	}
+	c.disp = nil
+
 	if c.lastResult != nil {
 		c.lastResult.Clear()
 		c.lastResult = nil
