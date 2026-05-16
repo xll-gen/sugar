@@ -1,0 +1,14 @@
+version: '3'
+
+tasks:
+  verify:
+    desc: Fast Go-only verification. Excel-bound integration tests are gated by the `excel_integration` build tag and are NOT run here.
+    cmds:
+      - go vet ./...
+      - go build ./...
+      - go test -count=1 ./...
+
+  integration:
+    desc: Excel COM integration tests (requires Windows + installed Excel).
+    cmds:
+      - go test -count=1 -tags=excel_integration ./excel/...

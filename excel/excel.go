@@ -6,45 +6,6 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
-// Application represents the Excel.Application object.
-// It is the root of the Excel object model.
-type Application interface {
-	sugar.Chain
-	// Workbooks returns the collection of all open workbooks.
-	Workbooks() Workbooks
-	// ActiveWorkbook returns the workbook that is currently active.
-	ActiveWorkbook() Workbook
-	// Quit quits the Excel application.
-	Quit() error
-}
-
-type application struct {
-	sugar.Chain
-}
-
-func (a *application) Workbooks() Workbooks {
-	return &workbooks{a.Get("Workbooks")}
-}
-
-func (a *application) ActiveWorkbook() Workbook {
-	return &workbook{a.Get("ActiveWorkbook")}
-}
-
-func (a *application) Quit() error {
-	return a.Call("Quit").Err()
-}
-
-// NewApplication creates a new Excel instance.
-func NewApplication(ctx sugar.Context) Application {
-	return &application{ctx.Create("Excel.Application")}
-}
-
-// GetApplication attaches to a running Excel instance.
-func GetApplication(ctx sugar.Context) Application {
-	return &application{ctx.GetActive("Excel.Application")}
-}
-
-
 // Workbooks represents the Workbooks collection.
 type Workbooks interface {
 	sugar.Chain
