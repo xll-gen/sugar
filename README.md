@@ -90,17 +90,17 @@ sugar.Do(func(ctx sugar.Context) error {
 
 ### Excel object coverage
 
-| xlwings Object | sugar type            | Status                                                                 |
-| -------------- | --------------------- | ---------------------------------------------------------------------- |
-| `App`          | `excel.Application`   | `Visible`, `DisplayAlerts`, `ScreenUpdating` (get/set), `Workbooks`, `ActiveWorkbook`, `Quit` |
-| `Books`        | `excel.Workbooks`     | `Add`, `Item`                                                          |
-| `Book`         | `excel.Workbook`      | `Worksheets`, `ActiveSheet`, `Save`, `Close`                           |
-| `Sheets`       | `excel.Worksheets`    | `Item`                                                                 |
-| `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`                                                       |
-| `Range`        | `excel.Range`         | `SetValue`, `Cells`                                                    |
+| xlwings Object | sugar type            | Status                                                                                                                 |
+| -------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `App`          | `excel.Application`   | `Visible`, `DisplayAlerts`, `ScreenUpdating`, `Calculation` (get/set), `Version`, `PID`, `Hwnd`, `Workbooks`/`Books`, `ActiveWorkbook`, `Quit`, `Kill` |
+| `Books`        | `excel.Workbooks`     | `Add`, `Open`, `Item`, `Count`, `Active`                                                                               |
+| `Book`         | `excel.Workbook`      | `Worksheets`/`Sheets`, `ActiveSheet`, `App`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close` |
+| `Sheets`       | `excel.Worksheets`    | `Add` (before/after/name), `Item`, `Count`, `Active`                                                                   |
+| `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`, `UsedRange`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit` |
+| `Range`        | `excel.Range`         | `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit` |
 
-Higher-priority gaps (`Range.Value()` getter with `.Options(...)`, `Workbooks.Open`,
-named ranges, charts, pictures) are tracked in [AGENTS.md §2.1](./AGENTS.md).
+Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): `Range.Options(...)`
+conversion framework, named ranges (`Name`/`Names`), charts, pictures, shapes.
 
 ## Core Concepts
 
@@ -109,7 +109,7 @@ named ranges, charts, pictures) are tracked in [AGENTS.md §2.1](./AGENTS.md).
 COM is sensitive to the execution thread. `sugar` provides safe entry points to manage this.
 
 - **`sugar.Do`**: Locks the current goroutine to an OS thread and executes synchronously.
-- **`sugar.Go`**: Starts a new goroutine (new OS thread) and independently initializes the COM environment for asynchronous work.
+- **`sugar.Go`**: Starts a new goroutine (new OS thread) and independently initializes the COM environment for asynchronous work. Returns a buffered `<-chan error` that delivers the goroutine's terminal error — ignore it for fire-and-forget, or receive it to know when the work finished and whether it failed.
 
 ### 2. Immutable Chain
 

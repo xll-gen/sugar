@@ -32,12 +32,12 @@ Implement these in priority order. Each must support method chaining via `sugar.
 
 | xlwings Object | sugar target type     | Status     | Priority | Notes                                                                |
 | -------------- | --------------------- | ---------- | -------- | -------------------------------------------------------------------- |
-| `App`          | `excel.Application`   | partial    | P0       | Has `NewApplication`, `GetApplication`, `Quit`, `Visible`/`SetVisible`, `DisplayAlerts`/`SetDisplayAlerts`, `ScreenUpdating`/`SetScreenUpdating`. Missing: `Calculation`, `Version`, `PID`, `Hwnd`, `Kill`, `Books`/`Books()` (alias for `Workbooks()`). |
-| `Books`        | `excel.Workbooks`     | partial    | P0       | Has `Add`, `Item`. Missing: `Open(path, ...opts)`, `Count`, iteration (`ForEach`), `Active`. |
-| `Book`         | `excel.Workbook`      | partial    | P0       | Has `Worksheets`, `ActiveSheet`, `Save`, `Close`. Missing: `SaveAs(path, ...)`, `FullName`, `Name`, `Path`, `Sheets` (alias for `Worksheets`), `Names`, `App`, `Activate`. |
-| `Sheets`       | `excel.Worksheets`    | partial    | P0       | Has `Item`. Missing: `Add(before, after, name)`, `Count`, iteration, `Active`. |
-| `Sheet`        | `excel.Worksheet`     | partial    | P0       | Has `Range`, `Cells`. Missing: `Name`/`SetName`, `Index`, `Activate`, `Delete`, `Clear`, `ClearContents`, `UsedRange`, `Visible`, `Names`, `Charts`, `Pictures`, `Shapes`, `AutoFit`. |
-| `Range`        | `excel.Range`         | partial    | P0       | Has `SetValue`, `Cells`. Missing: `Value()` getter with 2D unmarshal, `Address`, `Formula`, `Formula2`, `NumberFormat`, `Font`, `Color`, `Resize`, `Offset`, `Expand`, `End`, `Rows`, `Columns`, `Count`, `Row`, `Column`, `Width`, `Height`, `MergeCells`, `Merge`, `UnMerge`, `Clear`, `ClearContents`, `Copy`, `Delete`, `Insert`, `AutoFit`, `Sort`, `Find`. |
+| `App`          | `excel.Application`   | mostly done | P0       | Has `NewApplication`, `GetApplication`, `Quit`, `Kill`, `Visible`/`SetVisible`, `DisplayAlerts`/`SetDisplayAlerts`, `ScreenUpdating`/`SetScreenUpdating`, `Calculation`/`SetCalculation`, `Version`, `PID`, `Hwnd`, `Workbooks`/`Books` alias, `ActiveWorkbook`. |
+| `Books`        | `excel.Workbooks`     | mostly done | P0       | Has `Add`, `Open(path)`, `Item`, `Count`, `Active`. ForEach inherited from `sugar.Chain`. Missing typed: rich `Open(...opts)` (read-only, password, format). |
+| `Book`         | `excel.Workbook`      | mostly done | P0       | Has `Worksheets`/`Sheets` alias, `ActiveSheet`, `App`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close`. Missing: `Names`. |
+| `Sheets`       | `excel.Worksheets`    | mostly done | P0       | Has `Add(AddBefore/AddAfter/AddName)`, `Item`, `Count`, `Active`. |
+| `Sheet`        | `excel.Worksheet`     | mostly done | P0       | Has `Range`, `Cells`, `UsedRange`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit`. Missing: `Names`, `Charts`, `Pictures`, `Shapes` (those collections live on their own roadmap rows). |
+| `Range`        | `excel.Range`         | mostly done | P0       | Has `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`. Missing: `Font`, `Color`, `Expand`, `End`, `Width`, `Height`, `Insert`, `Sort`, `Find`, `Options(...)` framework (§2.2). |
 | `Name`/`Names` | `excel.Name`, `excel.Names` | absent | P1       | Workbook/sheet-scoped named ranges: `Add(name, refersTo)`, `Item`, iteration, `Delete`. |
 | `Chart`/`Charts` | `excel.Chart`, `excel.Charts` | absent | P1     | `Add(left, top, width, height)`, `SetSourceData(range)`, `ChartType`, `Name`, `Delete`, `ToPDF`, `ToPNG`. |
 | `Picture`/`Pictures` | `excel.Picture`, `excel.Pictures` | absent | P1 | `Add(filename, ...)`, `Update`, `Delete`. Used by xlwings' matplotlib bridge. |
@@ -161,11 +161,18 @@ The `expression` package allows navigating COM objects using string expressions 
 
 These items came out of a code review on 2026-05-16. Address them as part of normal work; do not require a separate epic.
 
-* `runner.go`: `Start()`-style panics in production code should become returned errors.
-* `excel/excel.go` is a single 162-line file holding every Excel object. Split per object as Section 5.8 directs, before expanding the API surface in §2.1.
-* `Range.SetValue` exists but there is no `Value()` getter that round-trips a 2-D `SAFEARRAY` into Go. Add it together with the `.Options()` framework (§2.2) — they are a single coherent change.
+Resolved in v0.7.0 (2026-05-16):
+
+* ~~`runner.go`: `Start()`-style panics in production code should become returned errors.~~ — `sugar.Go` / `Runner.Go` / `Context.Go` now return `<-chan error` so async COM errors surface to the caller instead of being silently dropped.
+* ~~`excel/excel.go` is a single 162-line file holding every Excel object.~~ — Split into `application.go`, `workbooks.go`, `workbook.go`, `worksheets.go`, `worksheet.go`, `range.go` plus shared `helpers.go` / `win32.go` / `safearray.go` (sugar root).
+* ~~`Range.SetValue` exists but there is no `Value()` getter that round-trips a 2-D `SAFEARRAY` into Go.~~ — `sugar.Chain.Value()` now decodes `VT_ARRAY|VT_VARIANT` into `[]interface{}` (1-D) or `[][]interface{}` (2-D) via direct `oleaut32.SafeArrayGetElement` calls; `Range.Value()` is the typed entry point. The `.Options(...)` framework remains future work (§2.2).
+* ~~`go.sum` has `golang.org/x/sys v0.1.0` (Jan 2022) as indirect.~~ — Bumped to `v0.30.0` (latest version still compatible with `go 1.22`).
+
+Still open:
+
 * No goroutine-safety tests for `sugar.Go`. Add a regression test that launches two Excel instances on two OS threads and verifies they do not interfere.
-* `go.sum` has `golang.org/x/sys v0.1.0` (Jan 2022) as indirect. Bump when `go-ole` is updated.
+* `Range.Options(...)` conversion framework (§2.2) — scalar/vector/grid forcing, `Expand("table"|"down"|"right")`, struct-by-header decode, custom `Convert(func)`. The 2-D decode primitive added in v0.7.0 is the foundation; the options DSL is the next layer.
+* Object collections still absent (P1+): `Name`/`Names`, `Chart`/`Charts`, `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
 
 ## 7. Documentation Standards
 

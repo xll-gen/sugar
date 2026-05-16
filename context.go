@@ -27,7 +27,11 @@ type Context interface {
 	// Do executes the function within a nested scope of this context.
 	Do(fn func(ctx Context) error) error
 	// Go executes the function in a new goroutine branching from this context.
-	Go(fn func(ctx Context) error)
+	// The returned channel receives the goroutine's terminal error (nil on
+	// success) once; it is buffered (cap 1) and closed after the send, so
+	// callers may ignore it for fire-and-forget semantics or receive it to
+	// observe the async result.
+	Go(fn func(ctx Context) error) <-chan error
 }
 
 type sugarContext struct {
@@ -91,6 +95,7 @@ func (c *sugarContext) Do(fn func(ctx Context) error) error {
 }
 
 // Go executes the function in a new goroutine branching from this context.
-func (c *sugarContext) Go(fn func(ctx Context) error) {
-	With(c).Go(fn)
+// See Context.Go for the error-channel contract.
+func (c *sugarContext) Go(fn func(ctx Context) error) <-chan error {
+	return With(c).Go(fn)
 }

@@ -120,26 +120,32 @@ func GetActive(progID string) Chain {
 
 func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 	if err != nil {
+		if result != nil {
+			result.Clear()
+		}
 		return &chain{err: err, ctx: c.ctx}
-	}
-
-	newChain := &chain{
-		disp:       c.disp,
-		lastResult: result,
-		ctx:        c.ctx,
 	}
 
 	if result.VT == ole.VT_DISPATCH {
 		newDisp := result.ToIDispatch()
 		newDisp.AddRef()
-		newChain.disp = newDisp
-		
+		newChain := &chain{
+			disp:       newDisp,
+			lastResult: result,
+			ctx:        c.ctx,
+		}
 		if c.ctx != nil {
 			c.ctx.Track(newChain)
 		}
+		return newChain
 	}
 
-	return newChain
+	// Value result: no IDispatch ownership. The new chain carries only the
+	// VARIANT; sharing parent's disp here would let Release() double-free it.
+	return &chain{
+		lastResult: result,
+		ctx:        c.ctx,
+	}
 }
 
 // Get retrieves a property and returns a NEW Chain.
@@ -167,6 +173,11 @@ func (c *chain) Call(method string, params ...interface{}) Chain {
 }
 
 // Put sets a property and returns the chain.
+//
+// On success the same chain is returned so callers can fluent-chain further
+// operations on the parent object (e.g. `app.Put("Visible", true).Get(...)`).
+// On error, a fresh error-only chain is returned — it does *not* share the
+// parent's IDispatch, so manually Release()ing it cannot double-free.
 func (c *chain) Put(prop string, params ...interface{}) Chain {
 	if c.err != nil || c.disp == nil {
 		return c
@@ -174,9 +185,9 @@ func (c *chain) Put(prop string, params ...interface{}) Chain {
 
 	_, err := oleutil.PutProperty(c.disp, prop, params...)
 	if err != nil {
-		return &chain{err: err, ctx: c.ctx, disp: c.disp}
+		return &chain{err: err, ctx: c.ctx}
 	}
-	
+
 	return c
 }
 
@@ -315,6 +326,15 @@ func (c *chain) IsDispatch() bool {
 }
 
 // Value retrieves the Go value of the last operation result.
+//
+// SAFEARRAY-of-VARIANT results (commonly returned by `Range.Value` /
+// `Range.Value2` in Excel automation) are decoded to Go slices:
+//
+//   - 1-D SAFEARRAYs become `[]interface{}`.
+//   - 2-D SAFEARRAYs become `[][]interface{}` indexed `[row][col]`.
+//
+// go-ole's built-in `VARIANT.Value()` returns nil for these types, so we
+// decode them here. IDispatch results are not values — use Store().
 func (c *chain) Value() (interface{}, error) {
 	if c.err != nil {
 		return nil, c.err
@@ -324,6 +344,9 @@ func (c *chain) Value() (interface{}, error) {
 	}
 	if c.lastResult.VT == ole.VT_DISPATCH {
 		return nil, errors.New("result is IDispatch, use Store")
+	}
+	if c.lastResult.VT&ole.VT_ARRAY != 0 {
+		return decodeVariantArray(c.lastResult)
 	}
 	return c.lastResult.Value(), nil
 }

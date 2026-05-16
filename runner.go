@@ -51,15 +51,25 @@ func (r *Runner) Do(fn func(ctx Context) error) (err error) {
 	return fn(ctx)
 }
 
-// Go executes the provided function in a new goroutine.
-func (r *Runner) Go(fn func(ctx Context) error) {
+// Go executes the provided function in a new goroutine and returns a
+// buffered, closed-after-send channel that delivers the goroutine's terminal
+// error (nil on success).
+//
+// Callers may ignore the returned channel for fire-and-forget semantics; the
+// goroutine never blocks on the channel because it is buffered with cap 1.
+// Use the channel when you need to know whether the async COM work
+// succeeded — earlier versions of this library silently dropped the error.
+func (r *Runner) Go(fn func(ctx Context) error) <-chan error {
+	done := make(chan error, 1)
 	go func() {
+		defer close(done)
 		runner := &Runner{
 			parent:    r.parent,
 			forceInit: true,
 		}
-		_ = runner.Do(fn)
+		done <- runner.Do(fn)
 	}()
+	return done
 }
 
 // Do executes the function with a Background context.
@@ -67,7 +77,8 @@ func Do(fn func(ctx Context) error) error {
 	return With(context.Background()).Do(fn)
 }
 
-// Go executes the function in a new goroutine with a Background context.
-func Go(fn func(ctx Context) error) {
-	With(context.Background()).Go(fn)
+// Go executes the function in a new goroutine with a Background context. The
+// returned channel reports the goroutine's terminal error; see Runner.Go.
+func Go(fn func(ctx Context) error) <-chan error {
+	return With(context.Background()).Go(fn)
 }

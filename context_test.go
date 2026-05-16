@@ -4,8 +4,10 @@ package sugar_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/xll-gen/sugar"
 )
@@ -98,4 +100,46 @@ func TestContext_WithCancel(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// TestGo_ReturnsErrorChannel verifies that the previously fire-and-forget
+// sugar.Go now surfaces the goroutine's terminal error through a returned
+// channel. Regression for v0.7.0 which made the signature
+//
+//	func Go(...) <-chan error
+//
+// Prior to this version the goroutine's error was silently dropped, masking
+// COM init failures and panics-wrapped-as-errors.
+func TestGo_ReturnsErrorChannel(t *testing.T) {
+	wantErr := errors.New("intentional")
+	done := sugar.Go(func(ctx sugar.Context) error { return wantErr })
+
+	select {
+	case got := <-done:
+		if got == nil || got.Error() != wantErr.Error() {
+			t.Errorf("expected %v, got %v", wantErr, got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sugar.Go did not signal completion within 5s")
+	}
+
+	// Channel must be closed after the single value.
+	if _, ok := <-done; ok {
+		t.Error("expected channel to be closed after delivering the error")
+	}
+}
+
+// TestGo_NilOnSuccess covers the success path: a clean return must produce
+// nil on the channel and then close it. This catches accidental double-send
+// or close-before-send refactors.
+func TestGo_NilOnSuccess(t *testing.T) {
+	done := sugar.Go(func(ctx sugar.Context) error { return nil })
+	select {
+	case got := <-done:
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sugar.Go did not signal completion within 5s")
+	}
 }
