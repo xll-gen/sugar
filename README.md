@@ -59,6 +59,8 @@ func main() {
 ## Excel Subpackage (Type-Safe)
 
 For common applications, `sugar` provides subpackages with friendly methods.
+The `excel` package mirrors [xlwings](https://docs.xlwings.org/en/stable/api.html)
+naming and behavior — see [AGENTS.md §2](./AGENTS.md) for the parity roadmap.
 
 ```go
 import "github.com/xll-gen/sugar/excel"
@@ -67,17 +69,38 @@ sugar.Do(func(ctx sugar.Context) error {
     app := excel.NewApplication(ctx)
     defer app.Quit()
 
-    app.Put("Visible", true)
-    
+    // xlwings-parity boolean properties on App.
+    // Setters return Application for fluent chaining; getters return a
+    // sugar.Chain — call .Value() to materialize the bool.
+    app.SetVisible(true).
+        SetDisplayAlerts(false).
+        SetScreenUpdating(false)
+
     wb := app.Workbooks().Add()
     sheet := wb.ActiveSheet()
-    
+
     // Type-safe Range manipulation
     sheet.Range("A1").SetValue("Hello from Sugar!")
-    
+
+    // Re-enable screen updates before exit.
+    app.SetScreenUpdating(true)
     return nil
 })
 ```
+
+### Excel object coverage
+
+| xlwings Object | sugar type            | Status                                                                 |
+| -------------- | --------------------- | ---------------------------------------------------------------------- |
+| `App`          | `excel.Application`   | `Visible`, `DisplayAlerts`, `ScreenUpdating` (get/set), `Workbooks`, `ActiveWorkbook`, `Quit` |
+| `Books`        | `excel.Workbooks`     | `Add`, `Item`                                                          |
+| `Book`         | `excel.Workbook`      | `Worksheets`, `ActiveSheet`, `Save`, `Close`                           |
+| `Sheets`       | `excel.Worksheets`    | `Item`                                                                 |
+| `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`                                                       |
+| `Range`        | `excel.Range`         | `SetValue`, `Cells`                                                    |
+
+Higher-priority gaps (`Range.Value()` getter with `.Options(...)`, `Workbooks.Open`,
+named ranges, charts, pictures) are tracked in [AGENTS.md §2.1](./AGENTS.md).
 
 ## Core Concepts
 
