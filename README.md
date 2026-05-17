@@ -97,10 +97,78 @@ sugar.Do(func(ctx sugar.Context) error {
 | `Book`         | `excel.Workbook`      | `Worksheets`/`Sheets`, `ActiveSheet`, `App`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close` |
 | `Sheets`       | `excel.Worksheets`    | `Add` (before/after/name), `Item`, `Count`, `Active`                                                                   |
 | `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`, `UsedRange`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit` |
-| `Range`        | `excel.Range`         | `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit` |
+| `Range`        | `excel.Range`         | `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` |
 
-Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): `Range.Options(...)`
-conversion framework, named ranges (`Name`/`Names`), charts, pictures, shapes.
+Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): named ranges
+(`Name`/`Names`), charts, pictures, shapes.
+
+### Range.Options — xlwings-style value conversion
+
+`Range.Options(...)` is the Go analogue of xlwings' `Range.options(...)`. It
+returns an `OptionedRange` that decodes the range lazily on `.Value()` or
+`.Get(&dst)`, applying any combination of shape forcing, range expansion,
+header-driven struct decode, empty-cell substitution, or a custom converter.
+
+```go
+import "github.com/xll-gen/sugar/excel"
+
+sugar.Do(func(ctx sugar.Context) error {
+    app := excel.NewApplication(ctx)
+    defer app.Quit()
+    app.SetVisible(false).SetDisplayAlerts(false)
+
+    wb := app.Workbooks().Add()
+    sheet := wb.ActiveSheet()
+
+    // Seed a small table.
+    sheet.Range("A1").SetValue("Name")
+    sheet.Range("B1").SetValue("Age")
+    sheet.Range("A2").SetValue("alice")
+    sheet.Range("B2").SetValue(30.0)
+    sheet.Range("A3").SetValue("bob")
+    sheet.Range("B3").SetValue(25.0)
+
+    // 1. Force a scalar read.
+    var price float64
+    sheet.Range("B2").Options(excel.Scalar()).Get(&price) // -> 30.0
+
+    // 2. Auto-grow from the anchor and decode rows into a struct slice.
+    type Person struct {
+        Name string
+        Age  int
+    }
+    var people []Person
+    err := sheet.Range("A1").Options(
+        excel.Expand("table"),
+        excel.Header(true),
+    ).Get(&people)
+    if err != nil {
+        return err
+    }
+    // people -> [{alice 30} {bob 25}]
+
+    // 3. Custom Convert escape hatch.
+    sum, _ := sheet.Range("B2", "B3").Options(
+        excel.Convert(func(raw [][]interface{}) (interface{}, error) {
+            total := 0.0
+            for _, row := range raw {
+                if v, ok := row[0].(float64); ok {
+                    total += v
+                }
+            }
+            return total, nil
+        }),
+    ).Value()
+    _ = sum // -> 55.0
+
+    return nil
+})
+```
+
+Available options: `Scalar()`, `Vector()` (alias `Vector1D`), `Grid()` (alias
+`Vector2D`), `Header(bool)`, `Empty(value)`, `DateFormat(layout)`,
+`Expand("table"|"down"|"right")`, and `Convert(fn)`. See
+[options.go](./excel/options.go) for full docs.
 
 ## Core Concepts
 

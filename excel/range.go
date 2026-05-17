@@ -74,6 +74,13 @@ type Range interface {
 
 	// AutoFit auto-fits the column width (or row height) for this range.
 	AutoFit() error
+
+	// Options is the Go equivalent of xlwings' `Range.options(...)`. It
+	// returns an OptionedRange that decodes the range on .Value() / .Get()
+	// with the supplied conversion knobs (Scalar/Vector/Grid, Expand,
+	// Header, Empty, DateFormat, Convert). See options.go for the full
+	// option catalogue.
+	Options(opts ...RangeOption) OptionedRange
 }
 
 type excelRange struct {
