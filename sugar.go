@@ -74,6 +74,30 @@ type chain struct {
 	ctx        Context
 }
 
+// dispEParamNotFound is the HRESULT COM uses to mark an omitted optional
+// parameter (DISP_E_PARAMNOTFOUND).
+const dispEParamNotFound = 0x80020004
+
+// Missing returns the COM "omitted optional parameter" placeholder — a
+// VT_ERROR VARIANT carrying DISP_E_PARAMNOTFOUND. Use it to skip middle
+// optional parameters in positional COM calls:
+//
+//	books.Call("Open", path, sugar.Missing(), true)  // ReadOnly:=True
+//
+// Trailing optional parameters can simply be left off; Missing() is only
+// needed when a later positional parameter must still be supplied.
+func Missing() *ole.VARIANT {
+	v := ole.NewVariant(ole.VT_ERROR, dispEParamNotFound)
+	return &v
+}
+
+// Error returns a Chain that carries err and nothing else. Useful for typed
+// wrappers that must surface a validation error through the fluent chain
+// contract before any COM call happens.
+func Error(err error) Chain {
+	return &chain{err: err}
+}
+
 // From starts a new chain with the given IDispatch.
 func From(disp *ole.IDispatch) Chain {
 	if disp != nil {
@@ -130,6 +154,14 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 
 	if result.VT == ole.VT_DISPATCH {
 		newDisp := result.ToIDispatch()
+		if newDisp == nil {
+			// COM `Nothing` (e.g. Range.Find without a match, ActiveWorkbook
+			// with no open book). Surface as an empty value chain — Value()
+			// returns nil, IsDispatch() is false — instead of panicking on
+			// AddRef(nil).
+			result.Clear()
+			return &chain{ctx: c.ctx}
+		}
 		newDisp.AddRef()
 		newChain := &chain{
 			disp:       newDisp,
