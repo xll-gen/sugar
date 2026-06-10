@@ -143,10 +143,17 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 
 	// Value result: no IDispatch ownership. The new chain carries only the
 	// VARIANT; sharing parent's disp here would let Release() double-free it.
-	return &chain{
+	// The chain is still tracked: VT_BSTR (and other allocating) VARIANTs
+	// need a VariantClear, which Release() performs — without tracking,
+	// every string property read would leak its BSTR.
+	newChain := &chain{
 		lastResult: result,
 		ctx:        c.ctx,
 	}
+	if c.ctx != nil {
+		c.ctx.Track(newChain)
+	}
+	return newChain
 }
 
 // normalizeParams rewrites argument types that go-ole's Invoke cannot

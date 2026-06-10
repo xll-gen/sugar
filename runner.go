@@ -15,6 +15,39 @@ type Runner struct {
 	forceInit bool
 }
 
+// COM HRESULTs that CoInitialize can return without the thread being unusable.
+const (
+	hrSFalse           = 0x00000001 // S_FALSE: already initialized on this thread
+	hrRPCEChangedMode  = 0x80010106 // RPC_E_CHANGED_MODE: thread is already in a different apartment model
+)
+
+// initializeCOM calls CoInitialize and reports whether a matching
+// CoUninitialize is owed. go-ole surfaces *any* non-zero HRESULT as an
+// error, including two benign cases this library must tolerate:
+//
+//   - S_FALSE — the thread is already STA-initialized (common when the host
+//     process, e.g. an XLL or GUI app, initialized COM first). The init
+//     count was still incremented, so the caller owes a CoUninitialize.
+//   - RPC_E_CHANGED_MODE — the thread is already initialized as MTA. COM
+//     calls still work via implicit marshaling; no CoUninitialize is owed
+//     because the call did not take a reference.
+func initializeCOM() (needUninit bool, err error) {
+	if err := ole.CoInitialize(0); err != nil {
+		oleErr, ok := err.(*ole.OleError)
+		if !ok {
+			return false, err
+		}
+		switch oleErr.Code() {
+		case hrSFalse:
+			return true, nil
+		case hrRPCEChangedMode:
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // With returns a new Runner with the specified parent context.
 func With(ctx context.Context) *Runner {
 	return &Runner{parent: ctx}
@@ -32,10 +65,13 @@ func (r *Runner) Do(fn func(ctx Context) error) (err error) {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
-		if err := ole.CoInitialize(0); err != nil {
+		needUninit, err := initializeCOM()
+		if err != nil {
 			return err
 		}
-		defer ole.CoUninitialize()
+		if needUninit {
+			defer ole.CoUninitialize()
+		}
 	}
 
 	innerStdCtx := context.WithValue(r.parent, activeSugarKey, true)
