@@ -5,6 +5,7 @@ package sugar
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"syscall"
 	"time"
 	"unsafe"
@@ -145,6 +146,9 @@ type safeArrayBound struct {
 //   - `[]interface{}` becomes a 1-D array (Excel reads it as a row).
 //   - `[][]interface{}` becomes a 2-D array indexed `[row][col]`. Rows must
 //     be equal length.
+//   - Any other slice ([]float64, [][]float64, []string rows, …) is widened
+//     to the shapes above via reflection: an element kind of Slice means
+//     2-D, anything else 1-D.
 //
 // The returned VARIANT owns the SAFEARRAY; the caller must Clear() it after
 // the COM call (VariantClear destroys the array).
@@ -155,7 +159,27 @@ func encodeVariantArray(value interface{}) (*ole.VARIANT, error) {
 	case [][]interface{}:
 		return encode2D(v)
 	}
-	return nil, fmt.Errorf("encodeVariantArray: unsupported type %T", value)
+	rv := reflect.ValueOf(value)
+	if rv.Kind() != reflect.Slice {
+		return nil, fmt.Errorf("encodeVariantArray: unsupported type %T", value)
+	}
+	if rv.Type().Elem().Kind() == reflect.Slice {
+		grid := make([][]interface{}, rv.Len())
+		for r := 0; r < rv.Len(); r++ {
+			row := rv.Index(r)
+			cells := make([]interface{}, row.Len())
+			for c := 0; c < row.Len(); c++ {
+				cells[c] = row.Index(c).Interface()
+			}
+			grid[r] = cells
+		}
+		return encode2D(grid)
+	}
+	vec := make([]interface{}, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		vec[i] = rv.Index(i).Interface()
+	}
+	return encode1D(vec)
 }
 
 func encode1D(src []interface{}) (*ole.VARIANT, error) {

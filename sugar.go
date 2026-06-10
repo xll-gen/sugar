@@ -5,6 +5,7 @@ package sugar
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -162,9 +163,12 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 //   - Chain → *ole.IDispatch (AddRef'd for the call; released by cleanup).
 //     This makes `wb.Call("Add", sheetChain)` and typed wrappers passing
 //     Range/Worksheet values work.
-//   - []interface{} / [][]interface{} → *ole.VARIANT carrying a
-//     VT_ARRAY|VT_VARIANT SAFEARRAY (destroyed by cleanup). This is the
-//     write path for `Range.Value` blocks.
+//   - Slices ([]interface{}, [][]interface{}, []float64, [][]string, …) →
+//     *ole.VARIANT carrying a VT_ARRAY|VT_VARIANT SAFEARRAY (destroyed by
+//     cleanup). This is the write path for `Range.Value` blocks. []byte and
+//     []string are exempt: go-ole marshals those natively as VT_UI1 /
+//     VT_BSTR arrays and changing that would alter behavior for non-Excel
+//     COM servers.
 //
 // The returned cleanup func must run after the COM call completes; it is
 // always non-nil.
@@ -186,7 +190,11 @@ func normalizeParams(params []interface{}) ([]interface{}, func(), error) {
 			}
 			cleanups = append(cleanups, func() { disp.Release() })
 			out[i] = disp
-		case []interface{}, [][]interface{}:
+		default:
+			if !needsArrayEncoding(p) {
+				out[i] = p
+				continue
+			}
 			va, err := encodeVariantArray(v)
 			if err != nil {
 				cleanup()
@@ -194,11 +202,19 @@ func normalizeParams(params []interface{}) ([]interface{}, func(), error) {
 			}
 			cleanups = append(cleanups, func() { va.Clear() })
 			out[i] = va
-		default:
-			out[i] = p
 		}
 	}
 	return out, cleanup, nil
+}
+
+// needsArrayEncoding reports whether a parameter must go through the
+// SAFEARRAY encoder. []byte and []string stay on go-ole's native paths.
+func needsArrayEncoding(p interface{}) bool {
+	switch p.(type) {
+	case nil, []byte, []string:
+		return false
+	}
+	return reflect.TypeOf(p).Kind() == reflect.Slice
 }
 
 // invokeGuarded runs a go-ole call and converts its panics (go-ole panics on
