@@ -4,7 +4,9 @@ package sugar
 
 import (
 	"fmt"
+	"math"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -24,6 +26,9 @@ var (
 	procSafeArrayGetLBound  = oleaut32.NewProc("SafeArrayGetLBound")
 	procSafeArrayGetUBound  = oleaut32.NewProc("SafeArrayGetUBound")
 	procSafeArrayGetElement = oleaut32.NewProc("SafeArrayGetElement")
+	procSafeArrayCreate     = oleaut32.NewProc("SafeArrayCreate")
+	procSafeArrayPutElement = oleaut32.NewProc("SafeArrayPutElement")
+	procSafeArrayDestroy    = oleaut32.NewProc("SafeArrayDestroy")
 )
 
 // decodeVariantArray turns a VARIANT carrying `VT_ARRAY | VT_VARIANT` — the
@@ -121,6 +126,180 @@ func bounds(sa unsafe.Pointer, dim uint32) (int32, int32, error) {
 		return 0, 0, fmt.Errorf("SafeArrayGetUBound(dim=%d) failed: 0x%x", dim, hr)
 	}
 	return lo, hi, nil
+}
+
+// SAFEARRAY encoding — the write-direction mirror of decodeVariantArray.
+//
+// go-ole's Invoke marshals only flat scalar types ([]byte / []string aside)
+// and panics on anything else, so writing a block to `Range.Value` needs a
+// hand-built `VT_ARRAY | VT_VARIANT` SAFEARRAY.
+
+type safeArrayBound struct {
+	cElements uint32
+	lLbound   int32
+}
+
+// encodeVariantArray builds a VARIANT carrying a VT_ARRAY|VT_VARIANT
+// SAFEARRAY from a Go slice:
+//
+//   - `[]interface{}` becomes a 1-D array (Excel reads it as a row).
+//   - `[][]interface{}` becomes a 2-D array indexed `[row][col]`. Rows must
+//     be equal length.
+//
+// The returned VARIANT owns the SAFEARRAY; the caller must Clear() it after
+// the COM call (VariantClear destroys the array).
+func encodeVariantArray(value interface{}) (*ole.VARIANT, error) {
+	switch v := value.(type) {
+	case []interface{}:
+		return encode1D(v)
+	case [][]interface{}:
+		return encode2D(v)
+	}
+	return nil, fmt.Errorf("encodeVariantArray: unsupported type %T", value)
+}
+
+func encode1D(src []interface{}) (*ole.VARIANT, error) {
+	bounds := []safeArrayBound{{cElements: uint32(len(src)), lLbound: 0}}
+	sa, err := createVariantSafeArray(bounds)
+	if err != nil {
+		return nil, err
+	}
+	for i, val := range src {
+		if err := putElement(sa, []int32{int32(i)}, val); err != nil {
+			procSafeArrayDestroy.Call(sa)
+			return nil, err
+		}
+	}
+	return wrapSafeArray(sa), nil
+}
+
+func encode2D(src [][]interface{}) (*ole.VARIANT, error) {
+	rows := len(src)
+	cols := 0
+	if rows > 0 {
+		cols = len(src[0])
+	}
+	for r, row := range src {
+		if len(row) != cols {
+			return nil, fmt.Errorf("encodeVariantArray: ragged rows — row 0 has %d columns, row %d has %d", cols, r, len(row))
+		}
+	}
+	bounds := []safeArrayBound{
+		{cElements: uint32(rows), lLbound: 0},
+		{cElements: uint32(cols), lLbound: 0},
+	}
+	sa, err := createVariantSafeArray(bounds)
+	if err != nil {
+		return nil, err
+	}
+	for r, row := range src {
+		for c, val := range row {
+			if err := putElement(sa, []int32{int32(r), int32(c)}, val); err != nil {
+				procSafeArrayDestroy.Call(sa)
+				return nil, err
+			}
+		}
+	}
+	return wrapSafeArray(sa), nil
+}
+
+// createVariantSafeArray allocates a VT_VARIANT SAFEARRAY. The handle stays
+// a uintptr through the encode path: the memory is COM-allocated, so Go's GC
+// never moves or frees it, and uintptr avoids vet's unsafe.Pointer rules.
+func createVariantSafeArray(bounds []safeArrayBound) (uintptr, error) {
+	sa, _, _ := procSafeArrayCreate.Call(
+		uintptr(ole.VT_VARIANT),
+		uintptr(uint32(len(bounds))),
+		uintptr(unsafe.Pointer(&bounds[0])),
+	)
+	if sa == 0 {
+		return 0, fmt.Errorf("SafeArrayCreate failed (dims=%d)", len(bounds))
+	}
+	return sa, nil
+}
+
+// wrapSafeArray packages a SAFEARRAY handle into a VARIANT that owns it.
+func wrapSafeArray(sa uintptr) *ole.VARIANT {
+	v := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT, int64(sa))
+	return &v
+}
+
+// putElement writes one Go scalar into a VT_ARRAY|VT_VARIANT SAFEARRAY cell.
+// SafeArrayPutElement deep-copies the VARIANT (BSTRs included), so the
+// temporary cell is cleared afterwards.
+func putElement(sa uintptr, indices []int32, val interface{}) error {
+	var cell ole.VARIANT
+	if err := scalarToVariant(val, &cell); err != nil {
+		return err
+	}
+	defer cell.Clear()
+	hr, _, _ := procSafeArrayPutElement.Call(
+		sa,
+		uintptr(unsafe.Pointer(&indices[0])),
+		uintptr(unsafe.Pointer(&cell)),
+	)
+	if hr != 0 {
+		return fmt.Errorf("SafeArrayPutElement failed: 0x%x", hr)
+	}
+	return nil
+}
+
+// scalarToVariant converts a Go scalar to a VARIANT cell value. Supported:
+// nil (VT_EMPTY), bool, string, all int/uint widths, float32/64, time.Time
+// (VT_DATE). Excel stores all numbers as doubles, so numeric width loss is
+// not a concern on the COM side.
+func scalarToVariant(val interface{}, out *ole.VARIANT) error {
+	ole.VariantInit(out)
+	switch x := val.(type) {
+	case nil:
+		// VT_EMPTY — an empty cell.
+	case bool:
+		if x {
+			*out = ole.NewVariant(ole.VT_BOOL, 0xffff)
+		} else {
+			*out = ole.NewVariant(ole.VT_BOOL, 0)
+		}
+	case string:
+		*out = ole.NewVariant(ole.VT_BSTR, int64(uintptr(unsafe.Pointer(ole.SysAllocStringLen(x)))))
+	case int:
+		setNumericVariant(out, float64(x))
+	case int8:
+		setNumericVariant(out, float64(x))
+	case int16:
+		setNumericVariant(out, float64(x))
+	case int32:
+		setNumericVariant(out, float64(x))
+	case int64:
+		setNumericVariant(out, float64(x))
+	case uint:
+		setNumericVariant(out, float64(x))
+	case uint8:
+		setNumericVariant(out, float64(x))
+	case uint16:
+		setNumericVariant(out, float64(x))
+	case uint32:
+		setNumericVariant(out, float64(x))
+	case uint64:
+		setNumericVariant(out, float64(x))
+	case float32:
+		setNumericVariant(out, float64(x))
+	case float64:
+		setNumericVariant(out, x)
+	case time.Time:
+		// OLE dates are timezone-naive day counts since 1899-12-30; use the
+		// wall-clock reading of x so what the user sees is what Excel shows.
+		days := x.Sub(time.Date(1899, 12, 30, 0, 0, 0, 0, x.Location())).Hours() / 24.0
+		*out = ole.NewVariant(ole.VT_DATE, int64(math.Float64bits(days)))
+	default:
+		return fmt.Errorf("scalarToVariant: unsupported cell type %T", val)
+	}
+	return nil
+}
+
+// setNumericVariant stores a float64 as VT_R8 — Excel's native cell number
+// representation.
+func setNumericVariant(out *ole.VARIANT, f float64) {
+	*out = ole.NewVariant(ole.VT_R8, int64(math.Float64bits(f)))
 }
 
 // getElement reads one VARIANT cell from a VT_ARRAY|VT_VARIANT SAFEARRAY at

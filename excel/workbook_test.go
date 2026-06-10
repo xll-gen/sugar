@@ -119,6 +119,44 @@ func TestWorksheets_AddAndCount(t *testing.T) {
 	})
 }
 
+// TestWorksheets_AddBeforeAfter places new sheets relative to an anchor.
+// These options pass a Worksheet (a sugar.Chain) as a COM argument, which
+// relies on the core chain→IDispatch normalization.
+func TestWorksheets_AddBeforeAfter(t *testing.T) {
+	sugar.Do(func(ctx sugar.Context) error {
+		app := excel.NewApplication(ctx)
+		if err := app.Err(); err != nil {
+			t.Skip("Excel not installed:", err)
+			return nil
+		}
+		app.SetVisible(false).SetDisplayAlerts(false)
+		defer app.Quit()
+
+		wb := app.Workbooks().Add()
+		sheets := wb.Worksheets()
+		anchor := sheets.Item(1)
+
+		before := sheets.Add(excel.AddBefore(anchor), excel.AddName("First"))
+		if err := before.Err(); err != nil {
+			t.Fatalf("Add(AddBefore): %v", err)
+		}
+		idx, err := before.Index()
+		if err != nil || idx != 1 {
+			t.Errorf("AddBefore index: got %d err=%v; want 1", idx, err)
+		}
+
+		after := sheets.Add(excel.AddAfter(before), excel.AddName("Second"))
+		if err := after.Err(); err != nil {
+			t.Fatalf("Add(AddAfter): %v", err)
+		}
+		idx, err = after.Index()
+		if err != nil || idx != 2 {
+			t.Errorf("AddAfter index: got %d err=%v; want 2", idx, err)
+		}
+		return nil
+	})
+}
+
 // TestWorksheet_NameAndIndex exercises the Worksheet identity properties.
 func TestWorksheet_NameAndIndex(t *testing.T) {
 	sugar.Do(func(ctx sugar.Context) error {

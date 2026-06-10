@@ -49,8 +49,8 @@ func TestRange_ScalarRoundTrip(t *testing.T) {
 // VT_ARRAY|VT_VARIANT.
 func TestRange_Value2D(t *testing.T) {
 	withSheet(t, func(sheet excel.Worksheet) {
-		// Seed a 2×3 block via individual cells (Range.SetValue with a Go
-		// 2-D slice is a separate code path we do not yet support).
+		// Seed a 2×3 block via individual cells to keep this test focused on
+		// the read path (the block-write path has its own test below).
 		sheet.Cells(1, 1).SetValue(1.0)
 		sheet.Cells(1, 2).SetValue(2.0)
 		sheet.Cells(1, 3).SetValue("c")
@@ -72,6 +72,29 @@ func TestRange_Value2D(t *testing.T) {
 		}
 		if !reflect.DeepEqual(grid, want) {
 			t.Errorf("grid mismatch:\n got  %v\n want %v", grid, want)
+		}
+	})
+}
+
+// TestRange_SetValue2D writes a whole block with one SetValue call — the
+// write-direction mirror of TestRange_Value2D. xlwings equivalent:
+// `sheet.range("A1").value = [[...], [...]]`.
+func TestRange_SetValue2D(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		want := [][]interface{}{
+			{"h1", "h2", "h3"},
+			{1.0, 2.0, 3.0},
+		}
+		if err := sheet.Range("A1", "C2").SetValue(want).Err(); err != nil {
+			t.Fatalf("SetValue 2-D failed: %v", err)
+		}
+
+		got, err := sheet.Range("A1", "C2").Value()
+		if err != nil {
+			t.Fatalf("Value() failed: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("grid mismatch:\n got  %v\n want %v", got, want)
 		}
 	})
 }

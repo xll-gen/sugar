@@ -4,6 +4,7 @@ package sugar
 
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -148,6 +149,63 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 	}
 }
 
+// normalizeParams rewrites argument types that go-ole's Invoke cannot
+// marshal (it panics on unknown types) into COM-compatible forms:
+//
+//   - Chain → *ole.IDispatch (AddRef'd for the call; released by cleanup).
+//     This makes `wb.Call("Add", sheetChain)` and typed wrappers passing
+//     Range/Worksheet values work.
+//   - []interface{} / [][]interface{} → *ole.VARIANT carrying a
+//     VT_ARRAY|VT_VARIANT SAFEARRAY (destroyed by cleanup). This is the
+//     write path for `Range.Value` blocks.
+//
+// The returned cleanup func must run after the COM call completes; it is
+// always non-nil.
+func normalizeParams(params []interface{}) ([]interface{}, func(), error) {
+	var cleanups []func()
+	cleanup := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	out := make([]interface{}, len(params))
+	for i, p := range params {
+		switch v := p.(type) {
+		case Chain:
+			disp, err := v.Store()
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("sugar: chain argument %d: %w", i, err)
+			}
+			cleanups = append(cleanups, func() { disp.Release() })
+			out[i] = disp
+		case []interface{}, [][]interface{}:
+			va, err := encodeVariantArray(v)
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("sugar: array argument %d: %w", i, err)
+			}
+			cleanups = append(cleanups, func() { va.Clear() })
+			out[i] = va
+		default:
+			out[i] = p
+		}
+	}
+	return out, cleanup, nil
+}
+
+// invokeGuarded runs a go-ole call and converts its panics (go-ole panics on
+// argument types it cannot marshal) into chain errors.
+func invokeGuarded(fn func() (*ole.VARIANT, error)) (result *ole.VARIANT, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("sugar: COM invoke panicked: %v", r)
+		}
+	}()
+	return fn()
+}
+
 // Get retrieves a property and returns a NEW Chain.
 func (c *chain) Get(prop string, params ...interface{}) Chain {
 	if c.err != nil {
@@ -156,7 +214,14 @@ func (c *chain) Get(prop string, params ...interface{}) Chain {
 	if c.disp == nil {
 		return &chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
-	result, err := oleutil.GetProperty(c.disp, prop, params...)
+	args, cleanup, err := normalizeParams(params)
+	if err != nil {
+		return &chain{err: err, ctx: c.ctx}
+	}
+	defer cleanup()
+	result, err := invokeGuarded(func() (*ole.VARIANT, error) {
+		return oleutil.GetProperty(c.disp, prop, args...)
+	})
 	return c.handleResult(result, err)
 }
 
@@ -168,7 +233,14 @@ func (c *chain) Call(method string, params ...interface{}) Chain {
 	if c.disp == nil {
 		return &chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
-	result, err := oleutil.CallMethod(c.disp, method, params...)
+	args, cleanup, err := normalizeParams(params)
+	if err != nil {
+		return &chain{err: err, ctx: c.ctx}
+	}
+	defer cleanup()
+	result, err := invokeGuarded(func() (*ole.VARIANT, error) {
+		return oleutil.CallMethod(c.disp, method, args...)
+	})
 	return c.handleResult(result, err)
 }
 
@@ -183,7 +255,14 @@ func (c *chain) Put(prop string, params ...interface{}) Chain {
 		return c
 	}
 
-	_, err := oleutil.PutProperty(c.disp, prop, params...)
+	args, cleanup, err := normalizeParams(params)
+	if err != nil {
+		return &chain{err: err, ctx: c.ctx}
+	}
+	defer cleanup()
+	_, err = invokeGuarded(func() (*ole.VARIANT, error) {
+		return oleutil.PutProperty(c.disp, prop, args...)
+	})
 	if err != nil {
 		return &chain{err: err, ctx: c.ctx}
 	}
