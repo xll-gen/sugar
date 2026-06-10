@@ -3,7 +3,6 @@
 package excel
 
 import (
-	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
 )
 
@@ -93,14 +92,8 @@ func (w *workbooks) Open(path string, opts ...OpenOption) Workbook {
 		args[4] = o.password
 	}
 	// Trim trailing Missing() placeholders.
-	last := len(args) - 1
-	for last > 0 {
-		if _, isMissing := args[last].(*ole.VARIANT); !isMissing {
-			break
-		}
-		last--
-	}
-	return &workbook{w.Call("Open", args[:last+1]...)}
+	args = trimTrailingMissing(args)
+	return &workbook{w.Call("Open", args...)}
 }
 
 func (w *workbooks) Item(index interface{}) Workbook {

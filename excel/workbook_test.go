@@ -6,11 +6,9 @@
 package excel_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/xll-gen/sugar"
 	"github.com/xll-gen/sugar/excel"
 )
 
@@ -20,19 +18,8 @@ import (
 func TestWorkbook_NameAndPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sugar_workbook_test.xlsx")
-	t.Cleanup(func() { _ = os.Remove(path) })
 
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
-
+	withBook(t, func(wb excel.Workbook) {
 		if err := wb.SaveAs(path); err != nil {
 			t.Fatalf("SaveAs: %v", err)
 		}
@@ -52,24 +39,85 @@ func TestWorkbook_NameAndPath(t *testing.T) {
 
 		// Skip the save-on-close prompt for the temp file.
 		_ = wb.SetSaved(true).Close()
-		return nil
+	})
+}
+
+// TestWorkbook_SaveAsOptions exercises the v1.0 functional-option form of
+// SaveAs: forcing the on-disk format with SaveFileFormat and protecting the
+// file with SavePassword. We write a macro-enabled .xlsm container (Excel
+// rejects a format/extension mismatch, so the extension matches the format),
+// then reopen with the password to prove SavePassword took effect.
+func TestWorkbook_SaveAsOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sugar_saveas_opts.xlsm")
+
+	withApp(t, func(app excel.Application) {
+		wb := app.Workbooks().Add()
+		if err := wb.Err(); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		wb.ActiveSheet().Range("A1").SetValue("secret-data")
+
+		if err := wb.SaveAs(path,
+			excel.SaveFileFormat(excel.FileFormatOpenXMLWorkbookMacroEnabled),
+			excel.SavePassword("pw123"),
+		); err != nil {
+			t.Fatalf("SaveAs with options: %v", err)
+		}
+		if err := wb.SetSaved(true).Close(); err != nil {
+			t.Fatalf("Close after SaveAs: %v", err)
+		}
+
+		// Reopening without the password should fail (proof SavePassword stuck);
+		// with the right password it should succeed and round-trip the value.
+		reopened := app.Workbooks().Open(path, excel.OpenPassword("pw123"))
+		if err := reopened.Err(); err != nil {
+			t.Fatalf("Open with correct password: %v", err)
+		}
+		got, err := reopened.ActiveSheet().Range("A1").Value()
+		if err != nil || got != "secret-data" {
+			t.Errorf("round-trip value: got %v err=%v; want secret-data", got, err)
+		}
+		_ = reopened.SetSaved(true).Close()
+	})
+}
+
+// TestWorkbook_CloseSaveChanges proves CloseSaveChanges(false) discards edits
+// without a prompt: we dirty a saved workbook, close discarding, reopen, and
+// confirm the edit did not persist.
+func TestWorkbook_CloseSaveChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sugar_close_savechanges.xlsx")
+
+	withApp(t, func(app excel.Application) {
+		wb := app.Workbooks().Add()
+		wb.ActiveSheet().Range("A1").SetValue("original")
+		if err := wb.SaveAs(path); err != nil {
+			t.Fatalf("SaveAs: %v", err)
+		}
+
+		// Dirty the workbook, then close discarding changes.
+		wb.ActiveSheet().Range("A1").SetValue("edited")
+		if err := wb.Close(excel.CloseSaveChanges(false)); err != nil {
+			t.Fatalf("Close(CloseSaveChanges(false)): %v", err)
+		}
+
+		reopened := app.Workbooks().Open(path)
+		if err := reopened.Err(); err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		got, err := reopened.ActiveSheet().Range("A1").Value()
+		if err != nil || got != "original" {
+			t.Errorf("after discard: got %v err=%v; want original (edit must not persist)", got, err)
+		}
+		_ = reopened.SetSaved(true).Close()
 	})
 }
 
 // TestWorkbook_SheetsAlias verifies that Sheets() and Worksheets() return
 // collections of identical Count. The two are aliases per xlwings naming.
 func TestWorkbook_SheetsAlias(t *testing.T) {
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
-
+	withBook(t, func(wb excel.Workbook) {
 		w1, err := wb.Worksheets().Count()
 		if err != nil {
 			t.Fatalf("Worksheets.Count: %v", err)
@@ -81,23 +129,12 @@ func TestWorkbook_SheetsAlias(t *testing.T) {
 		if w1 != w2 {
 			t.Errorf("Sheets/Worksheets count mismatch: %d vs %d", w1, w2)
 		}
-		return nil
 	})
 }
 
 // TestWorksheets_AddAndCount adds a sheet by name and confirms Count grows.
-// Excel defaults a workbook to 1 sheet; adding two more should yield 3.
 func TestWorksheets_AddAndCount(t *testing.T) {
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
+	withBook(t, func(wb excel.Workbook) {
 		sheets := wb.Worksheets()
 
 		before, _ := sheets.Count()
@@ -115,7 +152,6 @@ func TestWorksheets_AddAndCount(t *testing.T) {
 		if after != before+1 {
 			t.Errorf("Count: before=%d after=%d; expected +1", before, after)
 		}
-		return nil
 	})
 }
 
@@ -123,16 +159,7 @@ func TestWorksheets_AddAndCount(t *testing.T) {
 // These options pass a Worksheet (a sugar.Chain) as a COM argument, which
 // relies on the core chain→IDispatch normalization.
 func TestWorksheets_AddBeforeAfter(t *testing.T) {
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
+	withBook(t, func(wb excel.Workbook) {
 		sheets := wb.Worksheets()
 		anchor := sheets.Item(1)
 
@@ -153,24 +180,12 @@ func TestWorksheets_AddBeforeAfter(t *testing.T) {
 		if err != nil || idx != 2 {
 			t.Errorf("AddAfter index: got %d err=%v; want 2", idx, err)
 		}
-		return nil
 	})
 }
 
 // TestWorksheet_NameAndIndex exercises the Worksheet identity properties.
 func TestWorksheet_NameAndIndex(t *testing.T) {
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
-		s := wb.ActiveSheet()
-
+	withSheet(t, func(s excel.Worksheet) {
 		s.SetName("Renamed")
 		got, err := s.Name()
 		if err != nil || got != "Renamed" {
@@ -181,6 +196,5 @@ func TestWorksheet_NameAndIndex(t *testing.T) {
 		if err != nil || idx < 1 {
 			t.Errorf("Index: got %d, err=%v; want >=1", idx, err)
 		}
-		return nil
 	})
 }

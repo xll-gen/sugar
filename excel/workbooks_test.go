@@ -18,15 +18,7 @@ import (
 func TestWorkbooks_OpenReadOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "readonly_test.xlsx")
 
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
+	withApp(t, func(app excel.Application) {
 		wb := app.Workbooks().Add()
 		if err := wb.SaveAs(path); err != nil {
 			t.Fatalf("SaveAs: %v", err)
@@ -47,7 +39,6 @@ func TestWorkbooks_OpenReadOnly(t *testing.T) {
 			t.Errorf("workbook should be read-only, got %v", v)
 		}
 		_ = ro.SetSaved(true).Close()
-		return nil
 	})
 }
 
@@ -60,15 +51,7 @@ func TestWorkbooks_OpenWithPassword(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "password_test.xlsx")
 	const pw = "sugar-secret"
 
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
+	withApp(t, func(app excel.Application) {
 		wb := app.Workbooks().Add()
 		// SaveAs(Filename, FileFormat, Password, ...) — skip FileFormat.
 		if err := wb.Call("SaveAs", path, sugar.Missing(), pw).Err(); err != nil {
@@ -95,6 +78,5 @@ func TestWorkbooks_OpenWithPassword(t *testing.T) {
 			t.Errorf("opened workbook name: got %q err=%v", name, err)
 		}
 		_ = good.SetSaved(true).Close()
-		return nil
 	})
 }

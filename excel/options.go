@@ -68,24 +68,15 @@ func Scalar() RangeOption {
 }
 
 // Vector is the xlwings `.options(ndim=1)` analogue: force a 1-D slice result.
-// Vector1D is provided as a verbose alias for callers who prefer the explicit
-// dimensionality in the name.
 func Vector() RangeOption {
 	return func(o *rangeOptions) { o.shape = NDimVector }
 }
 
-// Vector1D is a verbose alias for Vector(). It exists only to match readers
-// who expect the xlwings-style "1d" suffix.
-func Vector1D() RangeOption { return Vector() }
-
 // Grid is the xlwings `.options(ndim=2)` analogue: always return [][]interface{}
-// (one row per Excel row). Vector2D is a verbose alias.
+// (one row per Excel row).
 func Grid() RangeOption {
 	return func(o *rangeOptions) { o.shape = NDimGrid }
 }
-
-// Vector2D is a verbose alias for Grid().
-func Vector2D() RangeOption { return Grid() }
 
 // Header treats the first row of the read result as struct field names when
 // decoding into a `*[]SomeStruct` destination. Matches xlwings'

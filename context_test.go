@@ -12,19 +12,23 @@ import (
 	"github.com/xll-gen/sugar"
 )
 
+// The context-mechanics tests below use lightweight scripting COM servers
+// (Scripting.Dictionary / Scripting.FileSystemObject) instead of Excel: they
+// exercise arena lifecycle, nesting, and async dispatch — none of which is
+// Excel-specific — so `go test ./...` runs them on any Windows host without
+// spawning Office processes.
+
 func TestContext_Lifecycle(t *testing.T) {
 	sugar.Do(func(ctx sugar.Context) error {
 		subCtx := sugar.NewContext(ctx)
 		defer subCtx.Release()
 
-		excel := subCtx.Create("Excel.Application")
-		if err := excel.Err(); err != nil {
-			t.Skip("Excel not available")
-			return nil
+		dict := subCtx.Create("Scripting.Dictionary")
+		if err := dict.Err(); err != nil {
+			t.Fatalf("Scripting.Dictionary create failed: %v", err)
 		}
-		defer excel.Call("Quit")
 
-		if err := excel.Put("Visible", false).Err(); err != nil {
+		if err := dict.Call("Add", "k", "v").Err(); err != nil {
 			t.Errorf("failed: %v", err)
 		}
 		return nil
@@ -33,27 +37,27 @@ func TestContext_Lifecycle(t *testing.T) {
 
 func TestContext_NestedDo(t *testing.T) {
 	err := sugar.Do(func(ctx sugar.Context) error {
-		excel := ctx.Create("Excel.Application")
-		if err := excel.Err(); err != nil {
-			t.Skip("Excel not available")
-			return nil
+		fso := ctx.Create("Scripting.FileSystemObject")
+		if err := fso.Err(); err != nil {
+			t.Fatalf("Scripting.FileSystemObject create failed: %v", err)
 		}
-		defer excel.Call("Quit")
 
 		err := ctx.Do(func(innerCtx sugar.Context) error {
-			wb := innerCtx.Track(excel.Get("Workbooks").Call("Add").Fork())
-			if err := wb.Err(); err != nil {
+			// GetSpecialFolder(2) = TemporaryFolder — an IDispatch result the
+			// inner arena takes ownership of via Track(Fork()).
+			folder := innerCtx.Track(fso.Call("GetSpecialFolder", 2).Fork())
+			if err := folder.Err(); err != nil {
 				t.Errorf("inner Do failed: %v", err)
 			}
 			return nil
 		})
-		
+
 		if err != nil {
 			t.Errorf("nested Do returned error: %v", err)
 		}
 		return nil
 	})
-	
+
 	if err != nil {
 		t.Errorf("outer Do returned error: %v (type %T)", err, err)
 	}
@@ -64,23 +68,20 @@ func TestContext_AsyncGo(t *testing.T) {
 	wg.Add(1)
 
 	sugar.Do(func(ctx sugar.Context) error {
-		excel := ctx.Create("Excel.Application")
-		if err := excel.Err(); err != nil {
-			t.Skip("Excel not available")
+		dict := ctx.Create("Scripting.Dictionary")
+		if err := dict.Err(); err != nil {
 			wg.Done()
-			return nil
+			t.Fatalf("Scripting.Dictionary create failed: %v", err)
 		}
-		defer excel.Call("Quit")
 
 		ctx.Go(func(asyncCtx sugar.Context) error {
 			defer wg.Done()
-			asyncExcel := asyncCtx.Create("Excel.Application")
-			if err := asyncExcel.Err(); err != nil {
-				t.Errorf("Async Excel creation failed: %v", err)
+			asyncDict := asyncCtx.Create("Scripting.Dictionary")
+			if err := asyncDict.Err(); err != nil {
+				t.Errorf("Async COM creation failed: %v", err)
 				return err
 			}
-			asyncExcel.Call("Quit")
-			return nil
+			return asyncDict.Call("Add", "k", "v").Err()
 		})
 		return nil
 	})

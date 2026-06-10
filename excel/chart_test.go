@@ -41,7 +41,7 @@ func TestCharts_AddCountDelete(t *testing.T) {
 			t.Fatalf("Count: %v", err)
 		}
 
-		ch := charts.Add(10, 10, 300, 200)
+		ch := charts.Add(excel.ChartAt(10, 10), excel.ChartSize(300, 200))
 		if err := ch.Err(); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
@@ -79,7 +79,7 @@ func TestChart_TypeAndGeometry(t *testing.T) {
 	withSheet(t, func(sheet excel.Worksheet) {
 		src := seedChartData(t, sheet)
 
-		ch := sheet.Charts().Add(0, 0, 355, 211)
+		ch := sheet.Charts().Add()
 		if err := ch.Err(); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
@@ -115,7 +115,7 @@ func TestChart_ToPNG(t *testing.T) {
 	withSheet(t, func(sheet excel.Worksheet) {
 		src := seedChartData(t, sheet)
 
-		ch := sheet.Charts().Add(0, 0, 355, 211)
+		ch := sheet.Charts().Add()
 		if err := ch.SetSourceData(src); err != nil {
 			t.Fatalf("SetSourceData: %v", err)
 		}
