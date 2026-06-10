@@ -39,7 +39,7 @@ Implement these in priority order. Each must support method chaining via `sugar.
 | `Sheet`        | `excel.Worksheet`     | mostly done | P0       | Has `Range`, `Cells`, `UsedRange`, `Names`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit`. Missing: `Charts`, `Pictures`, `Shapes` (those collections live on their own roadmap rows). |
 | `Range`        | `excel.Range`         | mostly done | P0       | Has `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` framework (§2.2 — `Scalar`/`Vector`/`Grid`, `Expand("table"|"down"|"right")`, `Header(true)` struct decode, `Empty`, `DateFormat`, `Convert`). Missing: `Font`, `Color`, `End`, `Width`, `Height`, `Insert`, `Sort`, `Find`. |
 | `Name`/`Names` | `excel.Name`, `excel.Names` | done (2026-06-10) | P1 | `name.go`/`names.go`: `Add(name, refersTo)` (string formula or Range), `Item` (by name/index), `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete`. Reached via `Workbook.Names()` and `Worksheet.Names()`. Note: `Names.Item` is a *method* in Excel's type library (unlike `Sheets.Item`, a property) — it must be invoked with `Call`, not `Get`. |
-| `Chart`/`Charts` | `excel.Chart`, `excel.Charts` | absent | P1     | `Add(left, top, width, height)`, `SetSourceData(range)`, `ChartType`, `Name`, `Delete`, `ToPDF`, `ToPNG`. |
+| `Chart`/`Charts` | `excel.Chart`, `excel.Charts` | done (2026-06-10) | P1 | `chart.go`/`charts.go`: `Charts.Add(left, top, width, height)`, `Item` (by name/index — a *method*, use `Call`), `Count`; `Chart` fuses COM's ChartObject+Chart like xlwings: `Name`/`SetName`, `ChartType`/`SetChartType` (typed `ChartType` consts), `SetSourceData(Range)`, `Left/Top/Width/Height`, `SetPosition`, `ToPNG` (Chart.Export), `ToPDF` (ExportAsFixedFormat), `Delete`. Via `Worksheet.Charts()` (`ChartObjects` is a method — `Call`, not `Get`). |
 | `Picture`/`Pictures` | `excel.Picture`, `excel.Pictures` | absent | P1 | `Add(filename, ...)`, `Update`, `Delete`. Used by xlwings' matplotlib bridge. |
 | `Shape`/`Shapes` | `excel.Shape`, `excel.Shapes` | absent | P2  | `Item`, iteration, `Delete`, position/size getters & setters. |
 | `Font`           | `excel.Font`               | absent | P2     | `Name`, `Size`, `Bold`, `Italic`, `Color`. Reached via `Range.Font()`. |
@@ -188,7 +188,7 @@ Resolved in v0.8.0 (2026-06-10, continued):
 
 Still open:
 
-* Object collections still absent (P1+): `Chart`/`Charts`, `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
+* Object collections still absent (P1+): `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
 * `Range.SetValue` accepts only `[]interface{}`/`[][]interface{}` slices; typed slices (`[][]float64`, `[]string` as a column, `[]T` struct rows — the write-direction mirror of `Options(Header(true)).Get`) still need an encode path.
 * Integration tests boot a fresh Excel per test (~2–3 s each, full tagged suite ≈95 s). Share one hidden instance via `TestMain` + per-test workbook to cut wall-clock.
 

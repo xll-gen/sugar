@@ -28,6 +28,29 @@ func toInt32(v interface{}) int32 {
 	return 0
 }
 
+// toFloat64 widens the numeric VARIANT shapes Excel emits for geometry
+// properties (Left/Top/Width/Height arrive as VT_R8, but VT_I4 turns up on
+// some hosts) into a float64. Same panic-free contract as toInt32.
+func toFloat64(v interface{}) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case float32:
+		return float64(x)
+	case int32:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case int:
+		return float64(x)
+	case uint32:
+		return float64(x)
+	}
+	return 0
+}
+
 // toString coerces any VARIANT scalar value to a Go string, formatting
 // numbers/bools via fmt when the COM property is documented as string but
 // occasionally arrives typed (e.g. Application.Version on some hosts).

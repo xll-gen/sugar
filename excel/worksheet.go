@@ -35,6 +35,9 @@ type Worksheet interface {
 	// xlwings' `sheet.names`; name strings come back sheet-qualified (e.g.
 	// "Sheet1!local_name").
 	Names() Names
+	// Charts returns the worksheet's embedded-chart collection. Equivalent
+	// to xlwings' `sheet.charts`.
+	Charts() Charts
 	// Name returns the worksheet's tab name.
 	Name() (string, error)
 	// SetName renames the worksheet.
@@ -81,6 +84,12 @@ func (w *worksheet) UsedRange() Range {
 
 func (w *worksheet) Names() Names {
 	return &names{w.Get("Names")}
+}
+
+func (w *worksheet) Charts() Charts {
+	// Worksheet.ChartObjects is a method (no-arg call returns the whole
+	// collection), not a property.
+	return &charts{w.Call("ChartObjects")}
 }
 
 func (w *worksheet) Name() (string, error) {

@@ -99,9 +99,10 @@ sugar.Do(func(ctx sugar.Context) error {
 | `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`, `UsedRange`, `Names`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit` |
 | `Range`        | `excel.Range`         | `Value` / `SetValue` (2-D SAFEARRAY decode *and* encode — write whole blocks with `[][]interface{}` in one call), `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` |
 | `Names`/`Name` | `excel.Names`, `excel.Name` | `Add` (formula string or `Range`), `Item`, `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete` — via `Workbook.Names()` / `Worksheet.Names()` |
+| `Charts`/`Chart` | `excel.Charts`, `excel.Chart` | `Add(left, top, w, h)`, `Item`, `Count`; `SetSourceData(Range)`, `ChartType`/`SetChartType`, `Name`/`SetName`, `Left/Top/Width/Height`, `SetPosition`, `ToPNG`, `ToPDF`, `Delete` — via `Worksheet.Charts()` |
 
-Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): charts, pictures,
-shapes, fonts.
+Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): pictures, shapes,
+fonts.
 
 ### Range.Options — xlwings-style value conversion
 
