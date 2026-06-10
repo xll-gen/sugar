@@ -14,9 +14,6 @@ import (
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/go-ole/go-ole"
-	"github.com/xll-gen/sugar"
 )
 
 // TestShapeResult_Auto verifies the default xlwings shape rules: 1×1 unwraps
@@ -415,6 +412,93 @@ func TestConvertTo_TypedDestination(t *testing.T) {
 	}
 }
 
+// TestSet_StructRowsWithHeader is the write-direction mirror of the header
+// decode: field names become the first row.
+func TestSet_StructRowsWithHeader(t *testing.T) {
+	type Row struct {
+		Name string
+		Age  float64
+	}
+	fake := &fakeRange{}
+	or := &optionedRange{rng: fake, opts: rangeOptions{header: true}}
+
+	err := or.Set([]Row{{"alice", 30}, {"bob", 25}})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	want := [][]interface{}{
+		{"Name", "Age"},
+		{"alice", 30.0},
+		{"bob", 25.0},
+	}
+	if !reflect.DeepEqual(fake.setValue, want) {
+		t.Errorf("written grid: got %v, want %v", fake.setValue, want)
+	}
+	if fake.resizedRows != 3 || fake.resizedCols != 2 {
+		t.Errorf("resize: got %dx%d, want 3x2", fake.resizedRows, fake.resizedCols)
+	}
+}
+
+// TestSet_StructRowsPositional omits the header row without Header(true).
+func TestSet_StructRowsPositional(t *testing.T) {
+	type Row struct {
+		Name string
+		Age  float64
+	}
+	fake := &fakeRange{}
+	or := &optionedRange{rng: fake}
+
+	if err := or.Set([]Row{{"alice", 30}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	want := [][]interface{}{{"alice", 30.0}}
+	if !reflect.DeepEqual(fake.setValue, want) {
+		t.Errorf("written grid: got %v, want %v", fake.setValue, want)
+	}
+	if fake.resizedRows != 1 || fake.resizedCols != 2 {
+		t.Errorf("resize: got %dx%d, want 1x2", fake.resizedRows, fake.resizedCols)
+	}
+}
+
+// TestSet_SliceShapes checks the resize arithmetic for plain 1-D and 2-D
+// slices and the zero-size no-op.
+func TestSet_SliceShapes(t *testing.T) {
+	fake := &fakeRange{}
+	or := &optionedRange{rng: fake}
+
+	if err := or.Set([][]float64{{1, 2, 3}, {4, 5, 6}}); err != nil {
+		t.Fatalf("Set 2-D: %v", err)
+	}
+	if fake.resizedRows != 2 || fake.resizedCols != 3 {
+		t.Errorf("2-D resize: got %dx%d, want 2x3", fake.resizedRows, fake.resizedCols)
+	}
+
+	if err := or.Set([]string{"a", "b"}); err != nil {
+		t.Fatalf("Set 1-D: %v", err)
+	}
+	if fake.resizedRows != 1 || fake.resizedCols != 2 {
+		t.Errorf("1-D resize: got %dx%d, want 1x2", fake.resizedRows, fake.resizedCols)
+	}
+
+	fake2 := &fakeRange{}
+	or2 := &optionedRange{rng: fake2}
+	if err := or2.Set([]string{}); err != nil {
+		t.Fatalf("Set empty: %v", err)
+	}
+	if fake2.setValue != nil {
+		t.Errorf("empty source should be a no-op, wrote %v", fake2.setValue)
+	}
+}
+
+// TestSet_NoExportedFields rejects structs the encoder cannot project.
+func TestSet_NoExportedFields(t *testing.T) {
+	type hidden struct{ x int } //nolint:unused
+	or := &optionedRange{rng: &fakeRange{}}
+	if err := or.Set([]hidden{{1}}); err == nil {
+		t.Error("expected error for struct with no exported fields")
+	}
+}
+
 // TestGet_NilDestination guards the public Get against the common "forgot &"
 // mistake.
 func TestGet_NilDestination(t *testing.T) {
@@ -448,57 +532,23 @@ func TestExpand_UnknownDirection(t *testing.T) {
 }
 
 // fakeRange is a stub Range used by the unit tests above. It only implements
-// the methods the Options pipeline actually calls during pure-Go decoding —
-// Value() and Err(). Every other method panics so an accidental dependency
-// on COM behaviour shows up loudly.
+// the methods the Options pipeline actually calls during pure-Go decoding
+// and encoding — Value/Err/SetValue/Resize. The embedded nil Range interface
+// supplies the rest of the method set: calling any of them panics with a
+// nil-pointer dereference, so an accidental dependency on COM behaviour
+// shows up loudly, and new Range methods don't require new stubs here.
 type fakeRange struct {
+	Range // nil — panics on any method not overridden below
+
 	value interface{}
 	err   error
+
+	// write recording for Options.Set tests
+	setValue                 interface{}
+	resizedRows, resizedCols int
 }
 
-func (f *fakeRange) Value() (interface{}, error)               { return f.value, f.err }
-func (f *fakeRange) Err() error                                { return f.err }
-func (f *fakeRange) SetValue(v interface{}) Range              { panic("not implemented") }
-func (f *fakeRange) Address() (string, error)                  { panic("not implemented") }
-func (f *fakeRange) Formula() (string, error)                  { panic("not implemented") }
-func (f *fakeRange) SetFormula(s string) Range                 { panic("not implemented") }
-func (f *fakeRange) Formula2() (string, error)                 { panic("not implemented") }
-func (f *fakeRange) SetFormula2(s string) Range                { panic("not implemented") }
-func (f *fakeRange) NumberFormat() (string, error)             { panic("not implemented") }
-func (f *fakeRange) SetNumberFormat(s string) Range            { panic("not implemented") }
-func (f *fakeRange) Cells(r, c interface{}) Range              { panic("not implemented") }
-func (f *fakeRange) Offset(r, c int) Range                     { panic("not implemented") }
-func (f *fakeRange) Resize(r, c int) Range                     { panic("not implemented") }
-func (f *fakeRange) Rows() Range                               { panic("not implemented") }
-func (f *fakeRange) Columns() Range                            { panic("not implemented") }
-func (f *fakeRange) Row() (int32, error)                       { panic("not implemented") }
-func (f *fakeRange) Column() (int32, error)                    { panic("not implemented") }
-func (f *fakeRange) Count() (int32, error)                     { panic("not implemented") }
-func (f *fakeRange) Clear() error                              { panic("not implemented") }
-func (f *fakeRange) ClearContents() error                      { panic("not implemented") }
-func (f *fakeRange) Delete() error                             { panic("not implemented") }
-func (f *fakeRange) Copy() error                               { panic("not implemented") }
-func (f *fakeRange) Merge() error                              { panic("not implemented") }
-func (f *fakeRange) UnMerge() error                            { panic("not implemented") }
-func (f *fakeRange) MergeCells() (bool, error)                 { panic("not implemented") }
-func (f *fakeRange) AutoFit() error                            { panic("not implemented") }
-func (f *fakeRange) Options(opts ...RangeOption) OptionedRange { panic("not implemented") }
-func (f *fakeRange) Font() Font                                { panic("not implemented") }
-
-// sugar.Chain methods (embedded in Range). These panic for the same reason.
-func (f *fakeRange) Get(prop string, params ...interface{}) sugar.Chain {
-	panic("not implemented")
-}
-func (f *fakeRange) Call(method string, params ...interface{}) sugar.Chain {
-	panic("not implemented")
-}
-func (f *fakeRange) Put(prop string, params ...interface{}) sugar.Chain {
-	panic("not implemented")
-}
-func (f *fakeRange) ForEach(cb func(item sugar.Chain) error) sugar.Chain {
-	panic("not implemented")
-}
-func (f *fakeRange) Fork() sugar.Chain               { panic("not implemented") }
-func (f *fakeRange) Store() (*ole.IDispatch, error)  { panic("not implemented") }
-func (f *fakeRange) Release() error                  { panic("not implemented") }
-func (f *fakeRange) IsDispatch() bool                { panic("not implemented") }
+func (f *fakeRange) Value() (interface{}, error)  { return f.value, f.err }
+func (f *fakeRange) Err() error                   { return f.err }
+func (f *fakeRange) SetValue(v interface{}) Range { f.setValue = v; return f }
+func (f *fakeRange) Resize(r, c int) Range        { f.resizedRows, f.resizedCols = r, c; return f }

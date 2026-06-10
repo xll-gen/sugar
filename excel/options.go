@@ -184,6 +184,19 @@ type OptionedRange interface {
 	//
 	// Returns an error if the read shape and destination cannot be reconciled.
 	Get(dst interface{}) error
+	// Set writes src into the sheet anchored at this range's top-left cell,
+	// auto-resizing to fit — the write-direction mirror of Get. Supported
+	// sources:
+	//
+	//   - []T (T struct)  — one row per element, exported fields in
+	//     declaration order. With Header(true) a header row of field names
+	//     is written first.
+	//   - [][]… 2-D slices — written as a rows×cols block.
+	//   - []… 1-D slices   — written as a single row.
+	//   - scalars          — plain single-cell write (no resize).
+	//
+	// xlwings analogue: `rng.options(...).value = data`.
+	Set(src interface{}) error
 	// Err returns the first deferred error captured while building this
 	// OptionedRange (e.g. an invalid Expand direction).
 	Err() error
@@ -353,6 +366,89 @@ func (o *optionedRange) Get(dst interface{}) error {
 		return err
 	}
 	return assign(elem, val)
+}
+
+// Set writes src anchored at the range's top-left cell. See
+// OptionedRange.Set for the supported source shapes.
+func (o *optionedRange) Set(src interface{}) error {
+	if o.err != nil {
+		return o.err
+	}
+	if src == nil {
+		return errors.New("Options.Set: source is nil")
+	}
+	rv := reflect.ValueOf(src)
+	if rv.Kind() != reflect.Slice {
+		return o.rng.SetValue(src).Err()
+	}
+	et := rv.Type().Elem()
+	switch {
+	case et.Kind() == reflect.Struct && et != reflect.TypeOf(time.Time{}):
+		grid, err := structRowsToGrid(rv, o.opts.header)
+		if err != nil {
+			return err
+		}
+		return o.resizeAndSet(len(grid), gridCols(grid), grid)
+	case et.Kind() == reflect.Slice:
+		rows := rv.Len()
+		cols := 0
+		if rows > 0 {
+			cols = rv.Index(0).Len()
+		}
+		return o.resizeAndSet(rows, cols, src)
+	default:
+		return o.resizeAndSet(1, rv.Len(), src)
+	}
+}
+
+func gridCols(grid [][]interface{}) int {
+	if len(grid) == 0 {
+		return 0
+	}
+	return len(grid[0])
+}
+
+// resizeAndSet grows the anchor range to rows×cols and writes v into it.
+// Zero-sized sources are a no-op.
+func (o *optionedRange) resizeAndSet(rows, cols int, v interface{}) error {
+	if rows == 0 || cols == 0 {
+		return nil
+	}
+	return o.rng.Resize(rows, cols).SetValue(v).Err()
+}
+
+// structRowsToGrid flattens a slice of structs into a [][]interface{} —
+// exported fields in declaration order, optionally preceded by a header row
+// of field names. The write-direction mirror of decodeStructSlice /
+// decodeStructSlicePositional.
+func structRowsToGrid(rv reflect.Value, includeHeader bool) ([][]interface{}, error) {
+	st := rv.Type().Elem()
+	var fields []reflect.StructField
+	for fi := 0; fi < st.NumField(); fi++ {
+		if st.Field(fi).PkgPath == "" { // exported only
+			fields = append(fields, st.Field(fi))
+		}
+	}
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("Options.Set: struct %s has no exported fields", st)
+	}
+	grid := make([][]interface{}, 0, rv.Len()+1)
+	if includeHeader {
+		hdr := make([]interface{}, len(fields))
+		for i, f := range fields {
+			hdr[i] = f.Name
+		}
+		grid = append(grid, hdr)
+	}
+	for r := 0; r < rv.Len(); r++ {
+		item := rv.Index(r)
+		row := make([]interface{}, len(fields))
+		for i, f := range fields {
+			row[i] = item.FieldByIndex(f.Index).Interface()
+		}
+		grid = append(grid, row)
+	}
+	return grid, nil
 }
 
 // readGrid normalises any Range.Value() result into [][]interface{} so the

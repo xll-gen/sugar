@@ -99,6 +99,120 @@ func TestRange_SetValue2D(t *testing.T) {
 	})
 }
 
+// TestRange_End covers the Ctrl+Arrow navigation primitive in all four
+// directions plus the invalid-direction error path.
+func TestRange_End(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		if err := sheet.Range("A1", "A3").SetValue([][]interface{}{
+			{1.0}, {2.0}, {3.0},
+		}).Err(); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		addr, err := sheet.Range("A1").End("down").Address()
+		if err != nil || addr != "$A$3" {
+			t.Errorf("End(down): got %q err=%v; want $A$3", addr, err)
+		}
+		addr, err = sheet.Range("A3").End("up").Address()
+		if err != nil || addr != "$A$1" {
+			t.Errorf("End(up): got %q err=%v; want $A$1", addr, err)
+		}
+
+		if err := sheet.Range("A1").End("sideways").Err(); err == nil {
+			t.Errorf("End(sideways) should error")
+		}
+	})
+}
+
+// TestRange_ColorRoundTrip writes and reads the Interior fill color.
+func TestRange_ColorRoundTrip(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		yellow := excel.RGB(255, 255, 0)
+		if err := sheet.Range("B2").SetColor(yellow).Err(); err != nil {
+			t.Fatalf("SetColor: %v", err)
+		}
+		got, err := sheet.Range("B2").Color()
+		if err != nil || got != yellow {
+			t.Errorf("Color: got %d err=%v; want %d", got, err, yellow)
+		}
+	})
+}
+
+// TestRange_Dimensions covers Width/Height (points, read-only) and
+// ColumnWidth/RowHeight (settable).
+func TestRange_Dimensions(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		rng := sheet.Range("A1")
+
+		if err := rng.SetColumnWidth(20).SetRowHeight(30).Err(); err != nil {
+			t.Fatalf("set dimensions: %v", err)
+		}
+		cw, err := rng.ColumnWidth()
+		if err != nil || cw != 20 {
+			t.Errorf("ColumnWidth: got %v err=%v; want 20", cw, err)
+		}
+		rh, err := rng.RowHeight()
+		if err != nil || rh != 30 {
+			t.Errorf("RowHeight: got %v err=%v; want 30", rh, err)
+		}
+
+		w, err := rng.Width()
+		if err != nil || w <= 0 {
+			t.Errorf("Width: got %v err=%v; want > 0", w, err)
+		}
+		h, err := rng.Height()
+		if err != nil || h != 30 {
+			t.Errorf("Height: got %v err=%v; want 30 (single row of height 30)", h, err)
+		}
+	})
+}
+
+// TestRange_Insert shifts cells down and verifies the displaced value.
+func TestRange_Insert(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue("original")
+
+		if err := sheet.Range("A1").Insert("down"); err != nil {
+			t.Fatalf("Insert(down): %v", err)
+		}
+		got, err := sheet.Range("A2").Value()
+		if err != nil || got != "original" {
+			t.Errorf("after Insert(down): A2 = %v err=%v; want original", got, err)
+		}
+
+		if err := sheet.Range("A1").Insert("diagonal"); err == nil {
+			t.Errorf("Insert(diagonal) should error")
+		}
+	})
+}
+
+// TestRange_Find covers both the hit (returns the cell) and the miss
+// (Excel's Nothing → found=false, not an error or a panic).
+func TestRange_Find(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		if err := sheet.Range("A1", "B2").SetValue([][]interface{}{
+			{"alpha", "beta"},
+			{"gamma", "delta"},
+		}).Err(); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		cell, found, err := sheet.Range("A1", "B2").Find("gamma")
+		if err != nil || !found {
+			t.Fatalf("Find(gamma): found=%v err=%v; want hit", found, err)
+		}
+		addr, err := cell.Address()
+		if err != nil || addr != "$A$2" {
+			t.Errorf("Find(gamma) address: got %q err=%v; want $A$2", addr, err)
+		}
+
+		_, found, err = sheet.Range("A1", "B2").Find("no_such_value")
+		if err != nil || found {
+			t.Errorf("Find(miss): found=%v err=%v; want clean miss", found, err)
+		}
+	})
+}
+
 // TestRange_Geometry checks the Row/Column/Count/Address quartet against a
 // known-shape range. Excel uses 1-based indexing, mirrored in our API.
 func TestRange_Geometry(t *testing.T) {

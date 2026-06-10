@@ -166,6 +166,35 @@ func TestOptions_ScalarForcing(t *testing.T) {
 	})
 }
 
+// TestOptions_SetGetStructRoundTrip writes a struct slice with a header row
+// and reads it back through the header decode — the full write/read mirror.
+func TestOptions_SetGetStructRoundTrip(t *testing.T) {
+	type Person struct {
+		Name string
+		Age  float64
+	}
+	withSheet(t, func(sheet excel.Worksheet) {
+		in := []Person{{"alice", 30}, {"bob", 25}}
+
+		if err := sheet.Range("A1").Options(excel.Header(true)).Set(in); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+
+		// The block now spans A1:B3 (header + 2 rows). Expand("table") from
+		// the anchor must rediscover it.
+		var out []Person
+		err := sheet.Range("A1").
+			Options(excel.Expand("table"), excel.Header(true)).
+			Get(&out)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !reflect.DeepEqual(out, in) {
+			t.Errorf("round trip: got %+v, want %+v", out, in)
+		}
+	})
+}
+
 // TestOptions_EmptyReplacement validates that Empty(value) substitutes nil
 // cells in the raw read.
 func TestOptions_EmptyReplacement(t *testing.T) {

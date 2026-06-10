@@ -3,7 +3,16 @@
 package excel
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/xll-gen/sugar"
+)
+
+// XlInsertShiftDirection values for Range.Insert.
+const (
+	xlShiftDown    int32 = -4121
+	xlShiftToRight int32 = -4161
 )
 
 // Range is a cell, row, column, or selection of cells — the Go equivalent of
@@ -49,12 +58,35 @@ type Range interface {
 	// Columns returns the columns collection of this range.
 	Columns() Range
 
+	// End returns the cell at the end of the contiguous data region in the
+	// given direction ("up", "down", "left", "right") — Ctrl+Arrow in the
+	// UI. Equivalent to xlwings' `range.end(direction)`.
+	End(direction string) Range
+
 	// Row returns the 1-based index of the range's first row.
 	Row() (int32, error)
 	// Column returns the 1-based index of the range's first column.
 	Column() (int32, error)
 	// Count returns the number of cells in the range (rows × cols).
 	Count() (int32, error)
+	// Width returns the range's total width in points.
+	Width() (float64, error)
+	// Height returns the range's total height in points.
+	Height() (float64, error)
+	// ColumnWidth returns the column width (Excel character units).
+	ColumnWidth() (float64, error)
+	// SetColumnWidth sets the column width for all columns in the range.
+	SetColumnWidth(w float64) Range
+	// RowHeight returns the row height in points.
+	RowHeight() (float64, error)
+	// SetRowHeight sets the row height for all rows in the range.
+	SetRowHeight(h float64) Range
+
+	// Color returns the cell background color (Interior.Color) as an OLE
+	// color integer (see excel.RGB). Equivalent to xlwings' `range.color`.
+	Color() (int32, error)
+	// SetColor fills the range background. Build values with excel.RGB.
+	SetColor(color int32) Range
 
 	// Clear clears values, formulas, and formatting.
 	Clear() error
@@ -64,6 +96,14 @@ type Range interface {
 	Delete() error
 	// Copy copies the range to the clipboard (no destination argument).
 	Copy() error
+	// Insert inserts cells, shifting existing ones away. shift is "down",
+	// "right", or "" (Excel picks based on the range shape). Equivalent to
+	// xlwings' `range.insert(shift=...)`.
+	Insert(shift string) error
+	// Find searches the range for a value (Excel's Ctrl+F semantics, match
+	// on any part of the cell). found is false when nothing matches —
+	// Excel's COM Find returns Nothing in that case, not an error.
+	Find(what string) (cell Range, found bool, err error)
 
 	// Merge merges all cells in the range into one.
 	Merge() error
@@ -165,6 +205,84 @@ func (r *excelRange) Rows() Range {
 
 func (r *excelRange) Columns() Range {
 	return &excelRange{r.Get("Columns")}
+}
+
+func (r *excelRange) End(direction string) Range {
+	var dir int32
+	switch strings.ToLower(direction) {
+	case "down":
+		dir = xlDown
+	case "up":
+		dir = xlUp
+	case "left":
+		dir = xlToLeft
+	case "right":
+		dir = xlToRight
+	default:
+		return &excelRange{sugar.Error(fmt.Errorf(
+			"End: unsupported direction %q (use \"up\", \"down\", \"left\", or \"right\")", direction))}
+	}
+	return &excelRange{r.Get("End", dir)}
+}
+
+func (r *excelRange) Width() (float64, error)  { return shapeFloat(r, "Width") }
+func (r *excelRange) Height() (float64, error) { return shapeFloat(r, "Height") }
+
+func (r *excelRange) ColumnWidth() (float64, error) {
+	return shapeFloat(r, "ColumnWidth")
+}
+
+func (r *excelRange) SetColumnWidth(w float64) Range {
+	return &excelRange{r.Put("ColumnWidth", w)}
+}
+
+func (r *excelRange) RowHeight() (float64, error) {
+	return shapeFloat(r, "RowHeight")
+}
+
+func (r *excelRange) SetRowHeight(h float64) Range {
+	return &excelRange{r.Put("RowHeight", h)}
+}
+
+func (r *excelRange) Color() (int32, error) {
+	v, err := r.Get("Interior").Get("Color").Value()
+	if err != nil {
+		return 0, err
+	}
+	return toInt32(v), nil
+}
+
+func (r *excelRange) SetColor(color int32) Range {
+	inner := r.Get("Interior").Put("Color", color)
+	if inner.Err() != nil {
+		return &excelRange{inner}
+	}
+	return r
+}
+
+func (r *excelRange) Insert(shift string) error {
+	switch strings.ToLower(shift) {
+	case "":
+		return r.Call("Insert").Err()
+	case "down":
+		return r.Call("Insert", xlShiftDown).Err()
+	case "right":
+		return r.Call("Insert", xlShiftToRight).Err()
+	default:
+		return fmt.Errorf("Insert: unsupported shift %q (use \"down\", \"right\", or \"\")", shift)
+	}
+}
+
+func (r *excelRange) Find(what string) (Range, bool, error) {
+	ch := r.Call("Find", what)
+	if err := ch.Err(); err != nil {
+		return nil, false, err
+	}
+	if !ch.IsDispatch() {
+		// Excel's Find returns Nothing when there is no match.
+		return nil, false, nil
+	}
+	return &excelRange{ch}, true, nil
 }
 
 func (r *excelRange) Row() (int32, error) {
