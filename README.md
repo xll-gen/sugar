@@ -94,13 +94,14 @@ sugar.Do(func(ctx sugar.Context) error {
 | -------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `App`          | `excel.Application`   | `Visible`, `DisplayAlerts`, `ScreenUpdating`, `Calculation` (get/set), `Version`, `PID`, `Hwnd`, `Workbooks`/`Books`, `ActiveWorkbook`, `Quit`, `Kill` |
 | `Books`        | `excel.Workbooks`     | `Add`, `Open`, `Item`, `Count`, `Active`                                                                               |
-| `Book`         | `excel.Workbook`      | `Worksheets`/`Sheets`, `ActiveSheet`, `App`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close` |
+| `Book`         | `excel.Workbook`      | `Worksheets`/`Sheets`, `ActiveSheet`, `App`, `Names`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close` |
 | `Sheets`       | `excel.Worksheets`    | `Add` (before/after/name), `Item`, `Count`, `Active`                                                                   |
-| `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`, `UsedRange`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit` |
-| `Range`        | `excel.Range`         | `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` |
+| `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`, `UsedRange`, `Names`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit` |
+| `Range`        | `excel.Range`         | `Value` / `SetValue` (2-D SAFEARRAY decode *and* encode — write whole blocks with `[][]interface{}` in one call), `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` |
+| `Names`/`Name` | `excel.Names`, `excel.Name` | `Add` (formula string or `Range`), `Item`, `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete` — via `Workbook.Names()` / `Worksheet.Names()` |
 
-Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): named ranges
-(`Name`/`Names`), charts, pictures, shapes.
+Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): charts, pictures,
+shapes, fonts.
 
 ### Range.Options — xlwings-style value conversion
 
@@ -120,13 +121,12 @@ sugar.Do(func(ctx sugar.Context) error {
     wb := app.Workbooks().Add()
     sheet := wb.ActiveSheet()
 
-    // Seed a small table.
-    sheet.Range("A1").SetValue("Name")
-    sheet.Range("B1").SetValue("Age")
-    sheet.Range("A2").SetValue("alice")
-    sheet.Range("B2").SetValue(30.0)
-    sheet.Range("A3").SetValue("bob")
-    sheet.Range("B3").SetValue(25.0)
+    // Seed a small table — one block write, one COM round trip.
+    sheet.Range("A1", "B3").SetValue([][]interface{}{
+        {"Name", "Age"},
+        {"alice", 30.0},
+        {"bob", 25.0},
+    })
 
     // 1. Force a scalar read.
     var price float64

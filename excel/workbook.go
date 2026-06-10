@@ -21,6 +21,9 @@ type Workbook interface {
 	// App returns the parent Application that owns this workbook.
 	// Equivalent to xlwings' `book.app`.
 	App() Application
+	// Names returns the workbook-scoped defined-names collection.
+	// Equivalent to xlwings' `book.names`.
+	Names() Names
 	// Name returns the workbook's file name (e.g. "Book1.xlsx").
 	Name() (string, error)
 	// FullName returns the workbook's full path including the file name.
@@ -64,6 +67,10 @@ func (w *workbook) ActiveSheet() Worksheet {
 
 func (w *workbook) App() Application {
 	return &application{w.Get("Application")}
+}
+
+func (w *workbook) Names() Names {
+	return &names{w.Get("Names")}
 }
 
 func (w *workbook) Name() (string, error) {

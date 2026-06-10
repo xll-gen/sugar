@@ -34,11 +34,11 @@ Implement these in priority order. Each must support method chaining via `sugar.
 | -------------- | --------------------- | ---------- | -------- | -------------------------------------------------------------------- |
 | `App`          | `excel.Application`   | mostly done | P0       | Has `NewApplication`, `GetApplication`, `Quit`, `Kill`, `Visible`/`SetVisible`, `DisplayAlerts`/`SetDisplayAlerts`, `ScreenUpdating`/`SetScreenUpdating`, `Calculation`/`SetCalculation`, `Version`, `PID`, `Hwnd`, `Workbooks`/`Books` alias, `ActiveWorkbook`. |
 | `Books`        | `excel.Workbooks`     | mostly done | P0       | Has `Add`, `Open(path)`, `Item`, `Count`, `Active`. ForEach inherited from `sugar.Chain`. Missing typed: rich `Open(...opts)` (read-only, password, format). |
-| `Book`         | `excel.Workbook`      | mostly done | P0       | Has `Worksheets`/`Sheets` alias, `ActiveSheet`, `App`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close`. Missing: `Names`. |
+| `Book`         | `excel.Workbook`      | mostly done | P0       | Has `Worksheets`/`Sheets` alias, `ActiveSheet`, `App`, `Names`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close`. |
 | `Sheets`       | `excel.Worksheets`    | mostly done | P0       | Has `Add(AddBefore/AddAfter/AddName)`, `Item`, `Count`, `Active`. |
-| `Sheet`        | `excel.Worksheet`     | mostly done | P0       | Has `Range`, `Cells`, `UsedRange`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit`. Missing: `Names`, `Charts`, `Pictures`, `Shapes` (those collections live on their own roadmap rows). |
+| `Sheet`        | `excel.Worksheet`     | mostly done | P0       | Has `Range`, `Cells`, `UsedRange`, `Names`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit`. Missing: `Charts`, `Pictures`, `Shapes` (those collections live on their own roadmap rows). |
 | `Range`        | `excel.Range`         | mostly done | P0       | Has `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` framework (§2.2 — `Scalar`/`Vector`/`Grid`, `Expand("table"|"down"|"right")`, `Header(true)` struct decode, `Empty`, `DateFormat`, `Convert`). Missing: `Font`, `Color`, `End`, `Width`, `Height`, `Insert`, `Sort`, `Find`. |
-| `Name`/`Names` | `excel.Name`, `excel.Names` | absent | P1       | Workbook/sheet-scoped named ranges: `Add(name, refersTo)`, `Item`, iteration, `Delete`. |
+| `Name`/`Names` | `excel.Name`, `excel.Names` | done (2026-06-10) | P1 | `name.go`/`names.go`: `Add(name, refersTo)` (string formula or Range), `Item` (by name/index), `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete`. Reached via `Workbook.Names()` and `Worksheet.Names()`. Note: `Names.Item` is a *method* in Excel's type library (unlike `Sheets.Item`, a property) — it must be invoked with `Call`, not `Get`. |
 | `Chart`/`Charts` | `excel.Chart`, `excel.Charts` | absent | P1     | `Add(left, top, width, height)`, `SetSourceData(range)`, `ChartType`, `Name`, `Delete`, `ToPDF`, `ToPNG`. |
 | `Picture`/`Pictures` | `excel.Picture`, `excel.Pictures` | absent | P1 | `Add(filename, ...)`, `Update`, `Delete`. Used by xlwings' matplotlib bridge. |
 | `Shape`/`Shapes` | `excel.Shape`, `excel.Shapes` | absent | P2  | `Item`, iteration, `Delete`, position/size getters & setters. |
@@ -172,11 +172,18 @@ Resolved in v0.7.1 (2026-05-17):
 
 * ~~`Range.Options(...)` conversion framework (§2.2) — scalar/vector/grid forcing, `Expand("table"|"down"|"right")`, struct-by-header decode, custom `Convert(func)`.~~ — Shipped in `excel/options.go` as `Range.Options(opts ...RangeOption) OptionedRange` with `OptionedRange.Value()` and `OptionedRange.Get(dst)`. Option helpers: `Scalar`, `Vector` (alias `Vector1D`), `Grid` (alias `Vector2D`), `Header`, `Empty`, `DateFormat`, `Expand`, `Convert`. Header-driven struct-slice decode (case-insensitive, lenient on unknown columns) is included. Unit tests live in `options_test.go`; integration coverage (Expand + struct decode against real Excel) in `options_integration_test.go`.
 
+Resolved in v0.8.0 (2026-06-10):
+
+* ~~Passing a `sugar.Chain` as a COM argument panicked (`go-ole` `panic("unknown type")`), breaking `Worksheets.Add(AddBefore(...))` and any object-valued argument.~~ — `chain.Get/Call/Put` now normalize arguments via `normalizeParams`: `Chain` → AddRef'd `*ole.IDispatch` (released after the call). go-ole panics are additionally converted to chain errors by `invokeGuarded`.
+* ~~`Range.SetValue([][]interface{})` panicked for the same reason — there was no SAFEARRAY *encode* path, only decode.~~ — `safearray.go` now has `encodeVariantArray` (1-D `[]interface{}` and 2-D `[][]interface{}` → `VT_ARRAY|VT_VARIANT`), with cell support for nil/bool/string/all int widths/floats/`time.Time` (VT_DATE, wall-clock). Block writes work in one COM round trip; ragged 2-D input is a chain error. COM tests: `normalize_com_test.go` (core), `TestRange_SetValue2D` (excel).
+* ~~`Name`/`Names` absent (P1).~~ — Shipped; see §2.1 row.
+
 Still open:
 
 * No goroutine-safety tests for `sugar.Go`. Add a regression test that launches two Excel instances on two OS threads and verifies they do not interfere.
-* Object collections still absent (P1+): `Name`/`Names`, `Chart`/`Charts`, `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
+* Object collections still absent (P1+): `Chart`/`Charts`, `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
 * `Range.Options(...)` extensions: positional struct decode (without Header(true)), `Index(int)` skip-columns helper, and a `Convert` variant for `*T`-typed destinations.
+* `Range.SetValue` accepts only `[]interface{}`/`[][]interface{}` slices; typed slices (`[][]float64`, `[]string` as a column, `[]T` struct rows — the write-direction mirror of `Options(Header(true)).Get`) still need an encode path.
 
 ## 7. Documentation Standards
 

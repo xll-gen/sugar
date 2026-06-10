@@ -31,6 +31,10 @@ type Worksheet interface {
 	// UsedRange returns the rectangular range that bounds all cells with
 	// content or formatting in the sheet.
 	UsedRange() Range
+	// Names returns the sheet-scoped defined-names collection. Equivalent to
+	// xlwings' `sheet.names`; name strings come back sheet-qualified (e.g.
+	// "Sheet1!local_name").
+	Names() Names
 	// Name returns the worksheet's tab name.
 	Name() (string, error)
 	// SetName renames the worksheet.
@@ -73,6 +77,10 @@ func (w *worksheet) Cells(row, col interface{}) Range {
 
 func (w *worksheet) UsedRange() Range {
 	return &excelRange{w.Get("UsedRange")}
+}
+
+func (w *worksheet) Names() Names {
+	return &names{w.Get("Names")}
 }
 
 func (w *worksheet) Name() (string, error) {
