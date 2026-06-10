@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/xll-gen/sugar"
 	"github.com/xll-gen/sugar/excel"
 )
 
@@ -213,6 +212,44 @@ func TestRange_Find(t *testing.T) {
 	})
 }
 
+// TestRange_AutoFit proves the v1.0 behavior change: AutoFit now fits both
+// column width AND row height (xlwings parity), not columns only. We shrink a
+// cell's column and row, write content that needs more space, AutoFit, and
+// assert both dimensions grew back.
+func TestRange_AutoFit(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		rng := sheet.Range("A1")
+		// Long content that needs a wide column to display.
+		rng.SetValue("A very long line of text that exceeds three characters")
+		// Force both dimensions small so AutoFit has to grow them back.
+		if err := rng.SetColumnWidth(3).SetRowHeight(6).Err(); err != nil {
+			t.Fatalf("shrink: %v", err)
+		}
+
+		narrowW, _ := rng.ColumnWidth()
+		shortH, _ := rng.RowHeight()
+
+		if err := rng.AutoFit(); err != nil {
+			t.Fatalf("AutoFit: %v", err)
+		}
+
+		wideW, err := rng.ColumnWidth()
+		if err != nil || wideW <= narrowW {
+			t.Errorf("AutoFit column: width %v did not grow from %v (err=%v)", wideW, narrowW, err)
+		}
+		// The artificially tiny 6pt row height must change once AutoFit touches
+		// rows at all — the key proof of the v1.0 row+column behavior. (Row
+		// AutoFit restores the natural single-line height, well above 6pt.)
+		tallH, err := rng.RowHeight()
+		if err != nil {
+			t.Fatalf("RowHeight after AutoFit: %v", err)
+		}
+		if tallH == shortH {
+			t.Errorf("AutoFit row: height stayed at %v; expected row autofit to adjust it", tallH)
+		}
+	})
+}
+
 // TestRange_Geometry checks the Row/Column/Count/Address quartet against a
 // known-shape range. Excel uses 1-based indexing, mirrored in our API.
 func TestRange_Geometry(t *testing.T) {
@@ -279,7 +316,7 @@ func TestRange_FormulaRoundTrip(t *testing.T) {
 }
 
 // TestRange_ClearAndMerge covers the destructive helpers added in v0.7.0:
-// ClearContents must drop values but leave the range usable; Merge/UnMerge
+// ClearContents must drop values but leave the range usable; Merge/Unmerge
 // must round-trip.
 func TestRange_ClearAndMerge(t *testing.T) {
 	withSheet(t, func(sheet excel.Worksheet) {
@@ -300,32 +337,8 @@ func TestRange_ClearAndMerge(t *testing.T) {
 		if err != nil || !merged {
 			t.Errorf("after Merge: MergeCells=%v, err=%v; want true", merged, err)
 		}
-		if err := rng.UnMerge(); err != nil {
-			t.Fatalf("UnMerge: %v", err)
+		if err := rng.Unmerge(); err != nil {
+			t.Fatalf("Unmerge: %v", err)
 		}
-	})
-}
-
-// withSheet is the standard integration-test harness for excel.Range tests:
-// it launches Excel invisibly, opens a fresh workbook, hands the first sheet
-// to the test, and guarantees Excel is closed even on panic.
-func withSheet(t *testing.T, fn func(sheet excel.Worksheet)) {
-	t.Helper()
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
-		if err := wb.Err(); err != nil {
-			t.Fatalf("Add workbook failed: %v", err)
-		}
-		sheet := wb.ActiveSheet()
-		fn(sheet)
-		return nil
 	})
 }

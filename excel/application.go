@@ -43,23 +43,24 @@ type Application interface {
 
 	// Version returns the Excel application version string (e.g. "16.0").
 	Version() (string, error)
-	// PID returns the underlying Excel process ID.
-	PID() (int32, error)
-	// Hwnd returns the top-level window handle of the Excel instance.
-	Hwnd() (int32, error)
+	// PID returns the underlying Excel process ID. Windows process IDs are
+	// unsigned DWORDs, so PID is reported as uint32.
+	PID() (uint32, error)
+	// Hwnd returns the top-level window handle of the Excel instance. Window
+	// handles are pointer-sized on Win64, so Hwnd is reported as uintptr.
+	Hwnd() (uintptr, error)
 
 	// Visible is the Go equivalent of xlwings' `App.visible` property getter.
-	// It returns a sugar.Chain representing the COM `Visible` property value;
-	// call .Value() to materialize as a bool.
-	Visible() sugar.Chain
+	// It returns whether the Excel application window is visible.
+	Visible() (bool, error)
 	// SetVisible is the Go equivalent of xlwings' `App.visible` property setter.
 	// It sets Excel's visibility and returns the Application for fluent chaining.
 	SetVisible(v bool) Application
 
 	// DisplayAlerts is the Go equivalent of xlwings' `App.display_alerts`
-	// property getter. It returns a sugar.Chain representing the COM
-	// `DisplayAlerts` property value; call .Value() to materialize as a bool.
-	DisplayAlerts() sugar.Chain
+	// property getter. It returns whether Excel shows prompts and alert
+	// messages.
+	DisplayAlerts() (bool, error)
 	// SetDisplayAlerts is the Go equivalent of xlwings' `App.display_alerts`
 	// property setter. Set to false to suppress prompts and alert messages;
 	// Excel will choose the default response. Returns the Application for
@@ -67,9 +68,9 @@ type Application interface {
 	SetDisplayAlerts(v bool) Application
 
 	// ScreenUpdating is the Go equivalent of xlwings' `App.screen_updating`
-	// property getter. It returns a sugar.Chain representing the COM
-	// `ScreenUpdating` property value; call .Value() to materialize as a bool.
-	ScreenUpdating() sugar.Chain
+	// property getter. It returns whether Excel repaints the screen during
+	// automation.
+	ScreenUpdating() (bool, error)
 	// SetScreenUpdating is the Go equivalent of xlwings' `App.screen_updating`
 	// property setter. Turn off to speed up scripts; remember to turn back on
 	// when the script ends. Returns the Application for fluent chaining.
@@ -110,7 +111,7 @@ func (a *application) Kill() error {
 	if err != nil {
 		return err
 	}
-	return exec.Command("taskkill", "/F", "/PID", strconv.Itoa(int(pid))).Run()
+	return exec.Command("taskkill", "/F", "/PID", strconv.FormatUint(uint64(pid), 10)).Run()
 }
 
 func (a *application) Version() (string, error) {
@@ -121,18 +122,11 @@ func (a *application) Version() (string, error) {
 	return toString(v), nil
 }
 
-// PID returns Excel's process ID via the `Hwnd` -> Win32 lookup path Excel
-// exposes through its OM property `Application.Hwnd` plus a process-snapshot
-// scan. We use the simpler approach: Excel surfaces the same PID indirectly
-// via the `Application.Hinstance`-style behaviour, but the cleanest portable
-// answer is the `Application` itself doesn't expose PID — we ask Excel's
-// `Application.OperatingSystem`? No, the proper COM path is `Application.Hwnd`
-// (a window handle) and we resolve PID with `GetWindowThreadProcessId`. We
-// avoid pulling in user32 by reading `Excel`'s built-in `ProcessID` shim —
-// modern Excel COM provides it indirectly through `Application.Caller`'s
-// process. Since none of those are portable across Excel versions, we
-// fall through to GetWindowThreadProcessId via the WinAPI.
-func (a *application) PID() (int32, error) {
+// PID returns Excel's OS process ID. Excel's COM surface exposes the top-level
+// window handle (`Application.Hwnd`) but not the process ID, so we resolve it
+// the same way xlwings does via psutil: `GetWindowThreadProcessId` against the
+// Hwnd. Windows process IDs are unsigned DWORDs, hence uint32.
+func (a *application) PID() (uint32, error) {
 	hwnd, err := a.Hwnd()
 	if err != nil {
 		return 0, err
@@ -140,19 +134,24 @@ func (a *application) PID() (int32, error) {
 	return pidFromHwnd(hwnd)
 }
 
-func (a *application) Hwnd() (int32, error) {
+func (a *application) Hwnd() (uintptr, error) {
 	v, err := a.Get("Hwnd").Value()
 	if err != nil {
 		return 0, err
 	}
-	return toInt32(v), nil
+	// Excel emits Hwnd as VT_I4; widen to uintptr (no truncation since the
+	// underlying COM value is a 32-bit handle, but uintptr is the correct
+	// handle-sized Go type for window handles).
+	return uintptr(uint32(toInt32(v))), nil
 }
 
-// Visible returns the current value of Excel's `Application.Visible` property
-// wrapped in a sugar.Chain. Call .Value() on the returned chain to obtain the
-// Go bool, or .Err() to surface any deferred COM error.
-func (a *application) Visible() sugar.Chain {
-	return a.Get("Visible")
+// Visible returns the current value of Excel's `Application.Visible` property.
+func (a *application) Visible() (bool, error) {
+	v, err := a.Get("Visible").Value()
+	if err != nil {
+		return false, err
+	}
+	return toBool(v), nil
 }
 
 // SetVisible sets Excel's `Application.Visible` property. The Application is
@@ -163,10 +162,13 @@ func (a *application) SetVisible(v bool) Application {
 }
 
 // DisplayAlerts returns the current value of Excel's
-// `Application.DisplayAlerts` property wrapped in a sugar.Chain. Call .Value()
-// on the returned chain to obtain the Go bool.
-func (a *application) DisplayAlerts() sugar.Chain {
-	return a.Get("DisplayAlerts")
+// `Application.DisplayAlerts` property.
+func (a *application) DisplayAlerts() (bool, error) {
+	v, err := a.Get("DisplayAlerts").Value()
+	if err != nil {
+		return false, err
+	}
+	return toBool(v), nil
 }
 
 // SetDisplayAlerts sets Excel's `Application.DisplayAlerts` property. Returns
@@ -176,10 +178,13 @@ func (a *application) SetDisplayAlerts(v bool) Application {
 }
 
 // ScreenUpdating returns the current value of Excel's
-// `Application.ScreenUpdating` property wrapped in a sugar.Chain. Call .Value()
-// on the returned chain to obtain the Go bool.
-func (a *application) ScreenUpdating() sugar.Chain {
-	return a.Get("ScreenUpdating")
+// `Application.ScreenUpdating` property.
+func (a *application) ScreenUpdating() (bool, error) {
+	v, err := a.Get("ScreenUpdating").Value()
+	if err != nil {
+		return false, err
+	}
+	return toBool(v), nil
 }
 
 // SetScreenUpdating sets Excel's `Application.ScreenUpdating` property.

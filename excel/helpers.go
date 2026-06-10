@@ -51,6 +51,32 @@ func toFloat64(v interface{}) float64 {
 	return 0
 }
 
+// toBool coerces the VARIANT shapes Excel emits for boolean properties into a
+// Go bool. COM hands back VT_BOOL as a Go bool, but legacy hosts occasionally
+// surface 0/-1 integers; treat any non-zero numeric as true. Same panic-free
+// contract as toInt32.
+func toBool(v interface{}) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case int32:
+		return x != 0
+	case int16:
+		return x != 0
+	case int64:
+		return x != 0
+	case int:
+		return x != 0
+	case uint32:
+		return x != 0
+	case float64:
+		return x != 0
+	case float32:
+		return x != 0
+	}
+	return false
+}
+
 // toString coerces any VARIANT scalar value to a Go string, formatting
 // numbers/bools via fmt when the COM property is documented as string but
 // occasionally arrives typed (e.g. Application.Version on some hosts).

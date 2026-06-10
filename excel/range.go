@@ -107,12 +107,14 @@ type Range interface {
 
 	// Merge merges all cells in the range into one.
 	Merge() error
-	// UnMerge undoes a Merge.
-	UnMerge() error
+	// Unmerge undoes a Merge. xlwings `range.unmerge()`.
+	Unmerge() error
 	// MergeCells reports whether all cells in the range are merged.
 	MergeCells() (bool, error)
 
-	// AutoFit auto-fits the column width (or row height) for this range.
+	// AutoFit auto-fits both the column width and the row height of the entire
+	// columns and rows intersecting this range, matching xlwings'
+	// `range.autofit()`.
 	AutoFit() error
 
 	// Font returns the character-formatting object for this range.
@@ -314,7 +316,7 @@ func (r *excelRange) ClearContents() error  { return r.Call("ClearContents").Err
 func (r *excelRange) Delete() error         { return r.Call("Delete").Err() }
 func (r *excelRange) Copy() error           { return r.Call("Copy").Err() }
 func (r *excelRange) Merge() error          { return r.Call("Merge").Err() }
-func (r *excelRange) UnMerge() error        { return r.Call("UnMerge").Err() }
+func (r *excelRange) Unmerge() error        { return r.Call("UnMerge").Err() }
 
 func (r *excelRange) MergeCells() (bool, error) {
 	v, err := r.Get("MergeCells").Value()
@@ -325,8 +327,15 @@ func (r *excelRange) MergeCells() (bool, error) {
 	return b, nil
 }
 
+// AutoFit fits both the column width and the row height of the cells
+// intersecting this range, matching xlwings' `range.autofit()`. EntireColumn
+// and EntireRow are COM *properties* (read via Get); AutoFit on the resulting
+// Range objects is the method that performs the fit.
 func (r *excelRange) AutoFit() error {
-	return r.Call("EntireColumn").Call("AutoFit").Err()
+	if err := r.Get("EntireColumn").Call("AutoFit").Err(); err != nil {
+		return err
+	}
+	return r.Get("EntireRow").Call("AutoFit").Err()
 }
 
 func (r *excelRange) Font() Font {

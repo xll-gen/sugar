@@ -1,14 +1,25 @@
-//go:build windows
+//go:build windows && excel_integration
+
+// Core-chain tests that drive a real Excel COM server. Gated behind the
+// excel_integration build tag so `go test ./...` never spawns Excel:
+//
+//	go test -tags=excel_integration ./...
 
 package sugar_test
 
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/xll-gen/sugar"
+	"github.com/xll-gen/sugar/internal/testutil"
 )
 
+// setupExcel creates a hidden Excel instance and registers the force-kill
+// tier of the two-tier cleanup (graceful Quit stays the caller's deferred
+// responsibility inside the sugar.Do block; the PID-based kill registered
+// here runs afterwards via t.Cleanup and needs no COM).
 func setupExcel(t *testing.T, ctx sugar.Context) sugar.Chain {
 	excel := ctx.Create("Excel.Application")
 	if err := excel.Err(); err != nil {
@@ -16,9 +27,41 @@ func setupExcel(t *testing.T, ctx sugar.Context) sugar.Chain {
 		t.Skip("Excel not installed or failed to create:", err)
 		return nil
 	}
-	
+
 	excel.Put("Visible", false)
+	registerExcelKill(t, excel)
 	return excel
+}
+
+// registerExcelKill resolves the Excel process ID through Hwnd and schedules
+// testutil.EnsureProcessExited so a hung Quit cannot leak an EXCEL.EXE.
+func registerExcelKill(t *testing.T, excel sugar.Chain) {
+	t.Helper()
+	hwnd, err := excel.Get("Hwnd").Value()
+	if err != nil {
+		t.Logf("could not resolve Excel Hwnd for cleanup: %v", err)
+		return
+	}
+	pid, err := testutil.PIDFromHwnd(toInt32(hwnd))
+	if err != nil || pid == 0 {
+		t.Logf("could not resolve Excel PID for cleanup: %v", err)
+		return
+	}
+	t.Cleanup(func() { testutil.EnsureProcessExited(t, pid, 5*time.Second) })
+}
+
+func toInt32(v interface{}) int32 {
+	switch x := v.(type) {
+	case int32:
+		return x
+	case int64:
+		return int32(x)
+	case int:
+		return int32(x)
+	case float64:
+		return int32(x)
+	}
+	return 0
 }
 
 func TestChain_Properties(t *testing.T) {

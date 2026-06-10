@@ -70,11 +70,13 @@ sugar.Do(func(ctx sugar.Context) error {
     defer app.Quit()
 
     // xlwings-parity boolean properties on App.
-    // Setters return Application for fluent chaining; getters return a
-    // sugar.Chain — call .Value() to materialize the bool.
+    // Setters return Application for fluent chaining; getters return
+    // (bool, error) like every other typed getter.
     app.SetVisible(true).
         SetDisplayAlerts(false).
         SetScreenUpdating(false)
+    visible, _ := app.Visible() // true
+    _ = visible
 
     wb := app.Workbooks().Add()
     sheet := wb.ActiveSheet()
@@ -94,18 +96,158 @@ sugar.Do(func(ctx sugar.Context) error {
 | -------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `App`          | `excel.Application`   | `Visible`, `DisplayAlerts`, `ScreenUpdating`, `Calculation` (get/set), `Version`, `PID`, `Hwnd`, `Workbooks`/`Books`, `ActiveWorkbook`, `Quit`, `Kill` |
 | `Books`        | `excel.Workbooks`     | `Add`, `Open` (with `OpenReadOnly`/`OpenPassword`/`OpenUpdateLinks`), `Item`, `Count`, `Active`                        |
-| `Book`         | `excel.Workbook`      | `Worksheets`/`Sheets`, `ActiveSheet`, `App`, `Names`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs`, `Close` |
+| `Book`         | `excel.Workbook`      | `Worksheets`/`Sheets`, `ActiveSheet`, `App`, `Names`, `Name`, `FullName`, `Path`, `Saved`/`SetSaved`, `Activate`, `Save`, `SaveAs` (with `SaveFileFormat`/`SavePassword`), `Close` (with `CloseSaveChanges`) |
 | `Sheets`       | `excel.Worksheets`    | `Add` (before/after/name), `Item`, `Count`, `Active`                                                                   |
 | `Sheet`        | `excel.Worksheet`     | `Range`, `Cells`, `UsedRange`, `Names`, `Name`/`SetName`, `Index`, `Visible`/`SetVisible`, `Activate`, `Delete`, `Clear`, `ClearContents`, `AutoFit` |
-| `Range`        | `excel.Range`         | `Value` / `SetValue` (2-D SAFEARRAY decode *and* encode — write whole blocks with `[][]interface{}` or typed slices in one call), `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Width`/`Height`, `ColumnWidth`/`RowHeight`, `End`, `Color`/`SetColor`, `Font()`, `Insert`, `Find`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` |
+| `Range`        | `excel.Range`         | `Value` / `SetValue` (2-D SAFEARRAY decode *and* encode — write whole blocks with `[][]interface{}` or typed slices in one call), `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Width`/`Height`, `ColumnWidth`/`RowHeight`, `End`, `Color`/`SetColor`, `Font()`, `Insert`, `Find`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`Unmerge`/`MergeCells`, `AutoFit` (column width + row height), `Options(...)` |
 | `Names`/`Name` | `excel.Names`, `excel.Name` | `Add` (formula string or `Range`), `Item`, `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete` — via `Workbook.Names()` / `Worksheet.Names()` |
-| `Charts`/`Chart` | `excel.Charts`, `excel.Chart` | `Add(left, top, w, h)`, `Item`, `Count`; `SetSourceData(Range)`, `ChartType`/`SetChartType`, `Name`/`SetName`, `Left/Top/Width/Height`, `SetPosition`, `ToPNG`, `ToPDF`, `Delete` — via `Worksheet.Charts()` |
+| `Charts`/`Chart` | `excel.Charts`, `excel.Chart` | `Add(ChartAt/ChartSize...)`, `Item`, `Count`; `SetSourceData(Range)`, `ChartType`/`SetChartType`, `Name`/`SetName`, `Left/Top/Width/Height`, `SetPosition`, `ToPNG`, `ToPDF`, `Delete` — via `Worksheet.Charts()` |
 | `Pictures`/`Picture` | `excel.Pictures`, `excel.Picture` | `Add(filename, PictureAt/PictureSize/PictureName...)`, `Item`, `Count`; `Name`/`SetName`, geometry get/set, `Delete` — via `Worksheet.Pictures()` |
 | `Shapes`/`Shape` | `excel.Shapes`, `excel.Shape` | `Item`, `Count`, typed `ForEachShape`; `Name`/`SetName`, `Type`, geometry get/set, `SetPosition`, `Delete` — via `Worksheet.Shapes()` |
 | `Font`         | `excel.Font`          | `Name`, `Size`, `Bold`, `Italic`, `Color` (get/set each) — via `Range.Font()`; pack colors with `excel.RGB(r, g, b)` |
 
 The xlwings §2.1 object-model roadmap in [AGENTS.md](./AGENTS.md) is now
 fully shipped through P2.
+
+### Opening workbooks
+
+`Workbooks.Open` takes an absolute path plus xlwings-style options. Opening a
+protected file with the wrong password fails fast with an error (no modal
+prompt as long as you always pass *some* password).
+
+```go
+sugar.Do(func(ctx sugar.Context) error {
+    app := excel.NewApplication(ctx)
+    defer app.Quit()
+    app.SetVisible(false).SetDisplayAlerts(false)
+
+    wb := app.Workbooks().Open(`C:\data\report.xlsx`,
+        excel.OpenReadOnly(),          // xlwings read_only=True
+        excel.OpenPassword("secret"),  // xlwings password=...
+        excel.OpenUpdateLinks(0),      // 0 = don't refresh external links
+    )
+    if err := wb.Err(); err != nil {
+        return err
+    }
+    defer wb.Close()
+
+    name, _ := wb.Name() // "report.xlsx"
+    _ = name
+    return nil
+})
+```
+
+### Range essentials: block I/O, navigation, formatting
+
+```go
+sheet := wb.ActiveSheet()
+
+// Block writes are one COM round trip. Typed Go slices ([][]float64, []int,
+// [][]string, ...) encode to SAFEARRAYs natively — no []interface{} required.
+sheet.Range("A1", "C1").SetValue([]interface{}{"q1", "q2", "q3"})
+sheet.Range("A2", "C3").SetValue([][]float64{
+    {1.5, 2.5, 3.5},
+    {4.0, 5.0, 6.0},
+})
+
+// Ctrl+Arrow navigation and Ctrl+F search.
+last := sheet.Range("A1").End("down")       // "up" | "down" | "left" | "right"
+addr, _ := last.Address()                   // "$A$3"
+cell, found, err := sheet.UsedRange().Find("q2")
+if err == nil && found {
+    addr, _ = cell.Address()                // a miss is found=false, not an error
+}
+
+// Geometry and layout.
+hdr := sheet.Range("A1").Resize(1, 3)       // A1:C1
+_ = sheet.Range("A1").Offset(1, 0)          // A2
+hdr.SetRowHeight(24)
+hdr.SetColumnWidth(14)
+_ = hdr.AutoFit() // fits both column width and row height (xlwings parity)
+
+// Colors and fonts. excel.RGB packs the OLE &HBBGGRR color int.
+hdr.SetColor(excel.RGB(255, 255, 0)) // Interior fill
+hdr.Font().SetBold(true).SetSize(12).SetColor(excel.RGB(180, 0, 0))
+
+// Insert cells, shifting the rest away ("down", "right", or "" to let
+// Excel decide from the range shape).
+_ = sheet.Range("A2", "C2").Insert("down")
+```
+
+### Charts
+
+`Worksheet.Charts()` manages embedded charts. Like xlwings, `excel.Chart`
+fuses COM's ChartObject (geometry) and Chart (data) into one object.
+
+```go
+sheet.Range("A1", "B4").SetValue([][]interface{}{
+    {"Month", "Sales"},
+    {"Jan", 10.0},
+    {"Feb", 20.0},
+    {"Mar", 15.0},
+})
+
+// Functional options (defaults: ChartAt(0,0), ChartSize(355,211) points).
+ch := sheet.Charts().Add(excel.ChartAt(10, 10), excel.ChartSize(360, 220))
+if err := ch.SetSourceData(sheet.Range("A1", "B4")); err != nil {
+    return err
+}
+ch.SetChartType(excel.ChartColumnClustered).SetName("Sales")
+
+if err := ch.ToPNG(`C:\out\sales.png`); err != nil { // chart.to_png()
+    return err
+}
+_ = ch.ToPDF(`C:\out\sales.pdf`) // ExportAsFixedFormat
+
+byName := sheet.Charts().Item("Sales") // or 1-based index
+_ = byName.Delete()
+```
+
+### Pictures and shapes
+
+```go
+// Insert an image with optional placement, size, and name.
+pic := sheet.Pictures().Add(`C:\out\sales.png`,
+    excel.PictureAt(30, 40),      // left, top — defaults to (0, 0)
+    excel.PictureSize(120, 90),   // omit to keep the image's natural size
+    excel.PictureName("Logo"))
+if err := pic.Err(); err != nil {
+    return err
+}
+
+// Everything on the drawing layer (pictures, charts, ...) is a Shape.
+res := sheet.Shapes().ForEachShape(func(s excel.Shape) error {
+    st, err := s.Type()
+    if err != nil {
+        return err
+    }
+    if st == excel.ShapeTypePicture {
+        s.SetPosition(0, 0, 60, 45) // left, top, width, height
+    }
+    return nil
+})
+if err := res.Err(); err != nil {
+    return err
+}
+```
+
+### Defined names
+
+```go
+// Workbook-scoped: add by Range or by an A1-notation formula string.
+n := wb.Names().Add("inputs", sheet.Range("A1", "B4"))
+if err := n.Err(); err != nil {
+    return err
+}
+rng := wb.Names().Item("inputs").RefersToRange()
+addr, _ := rng.Address() // "$A$1:$B$4"
+
+ok, _ := wb.Names().Contains("inputs") // true
+_ = wb.Names().Item("inputs").Delete()
+
+// Sheet-scoped names come back qualified ("Sheet1!local"), like xlwings.
+sheet.Names().Add("local", sheet.Range("D1"))
+```
 
 ### Range.Options — xlwings-style value conversion
 
@@ -165,14 +307,22 @@ sugar.Do(func(ctx sugar.Context) error {
     ).Value()
     _ = sum // -> 55.0
 
+    // 4. Set is the write-direction mirror of Get: anchor at one cell and
+    //    it auto-resizes to fit. With Header(true) a header row of field
+    //    names is written first; without it rows are written positionally.
+    if err := sheet.Range("D1").Options(excel.Header(true)).Set(people); err != nil {
+        return err
+    }
+    // D1:E3 now holds: Name | Age / alice | 30 / bob | 25
+
     return nil
 })
 ```
 
-Available options: `Scalar()`, `Vector()` (alias `Vector1D`), `Grid()` (alias
-`Vector2D`), `Header(bool)`, `Empty(value)`, `DateFormat(layout)`,
-`Expand("table"|"down"|"right")`, and `Convert(fn)`. See
-[options.go](./excel/options.go) for full docs.
+Available options: `Scalar()`, `Vector()`, `Grid()`, `Header(bool)`,
+`Index(n)`, `Empty(value)`, `DateFormat(layout)`,
+`Expand("table"|"down"|"right")`, `Convert(fn)`, and the compile-time-checked
+`ConvertTo[T](fn)`. See [options.go](./excel/options.go) for full docs.
 
 ## Core Concepts
 
@@ -223,7 +373,27 @@ The `sugar.Context` acts as a resource collector (Arena). Any object created via
 
 **Manual `Release()` calls are no longer necessary.**
 
-### 5. Nested Scopes
+### 5. Skipping Optional COM Parameters (`sugar.Missing`)
+
+Many COM methods take long positional parameter lists where you only want to
+set a late parameter. `sugar.Missing()` produces the canonical "parameter not
+supplied" VARIANT (`VT_ERROR` / `DISP_E_PARAMNOTFOUND`) so middle optionals
+can be skipped:
+
+```go
+// Any positional COM method with middle optionals — skip the second arg:
+obj.Call("SomeMethod", "first", sugar.Missing(), "third")
+```
+
+(For the common Excel cases, prefer the typed wrappers, e.g.
+`wb.SaveAs(path, excel.SaveFileFormat(...), excel.SavePassword(...))`, which
+handle the Missing() bookkeeping internally.)
+
+Relatedly, `sugar.Error(err)` creates a chain that carries only an error —
+useful in typed wrappers that must surface a validation failure through the
+fluent chain contract before any COM call happens.
+
+### 6. Nested Scopes
 
 Use `ctx.Do` to create a nested arena for early resource cleanup.
 
@@ -265,6 +435,7 @@ sugar.Do(func(ctx sugar.Context) error {
 
 - **Windows Only:** This library depends on Windows COM technology and only works on Windows OS.
 - **Object Sharing Between Threads:** Sharing raw `IDispatch` pointers between threads (goroutines) without proper marshaling is dangerous. We recommend creating independent objects in each goroutine using `sugar.Go`.
+- **Testing:** `go test ./...` runs only Excel-free unit tests (lightweight scripting COM objects at most). The live-Excel integration suite is opt-in: `go test -tags=excel_integration ./...` (requires installed Excel; boots real instances).
 
 ## License
 

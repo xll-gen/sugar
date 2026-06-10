@@ -9,30 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xll-gen/sugar"
 	"github.com/xll-gen/sugar/excel"
 )
-
-// withBook opens a fresh hidden workbook and hands it to fn.
-func withBook(t *testing.T, fn func(wb excel.Workbook)) {
-	t.Helper()
-	sugar.Do(func(ctx sugar.Context) error {
-		app := excel.NewApplication(ctx)
-		if err := app.Err(); err != nil {
-			t.Skip("Excel not installed:", err)
-			return nil
-		}
-		app.SetVisible(false).SetDisplayAlerts(false)
-		defer app.Quit()
-
-		wb := app.Workbooks().Add()
-		if err := wb.Err(); err != nil {
-			t.Fatalf("Add workbook failed: %v", err)
-		}
-		fn(wb)
-		return nil
-	})
-}
 
 // TestNames_AddByString defines a workbook-scoped name from an A1-notation
 // string and round-trips Name / RefersTo / RefersToRange.

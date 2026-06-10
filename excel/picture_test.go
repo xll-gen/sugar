@@ -23,7 +23,7 @@ func makePNG(t *testing.T, sheet excel.Worksheet) string {
 	}).Err(); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	ch := sheet.Charts().Add(0, 0, 200, 150)
+	ch := sheet.Charts().Add(excel.ChartSize(200, 150))
 	if err := ch.SetSourceData(sheet.Range("A1", "B3")); err != nil {
 		t.Fatalf("SetSourceData: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestShapes_TypedIteration(t *testing.T) {
 		if err := sheet.Pictures().Add(png, excel.PictureName("P1")).Err(); err != nil {
 			t.Fatalf("Add picture: %v", err)
 		}
-		if err := sheet.Charts().Add(200, 0, 150, 100).Err(); err != nil {
+		if err := sheet.Charts().Add(excel.ChartAt(200, 0), excel.ChartSize(150, 100)).Err(); err != nil {
 			t.Fatalf("Add chart: %v", err)
 		}
 

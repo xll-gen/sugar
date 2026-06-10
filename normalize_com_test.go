@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && excel_integration
 
 // COM tests for chain argument normalization (normalizeParams):
 //   - Go 2-D slices must marshal to VT_ARRAY|VT_VARIANT SAFEARRAYs so block
@@ -8,6 +8,10 @@
 //
 // Before these were normalized, both paths hit go-ole's `panic("unknown
 // type")` inside Invoke.
+//
+// Gated behind the excel_integration build tag (these spawn real Excel):
+//
+//	go test -tags=excel_integration ./...
 
 package sugar_test
 

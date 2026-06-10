@@ -20,15 +20,16 @@ var (
 )
 
 // pidFromHwnd returns the PID owning the given top-level window. Returns an
-// error if the Win32 call fails or the window has gone away.
-func pidFromHwnd(hwnd int32) (int32, error) {
+// error if the Win32 call fails or the window has gone away. The PID is an
+// unsigned DWORD (uint32).
+func pidFromHwnd(hwnd uintptr) (uint32, error) {
 	var pid uint32
 	ret, _, callErr := procGetWindowThreadProcessId.Call(
-		uintptr(hwnd),
+		hwnd,
 		uintptr(unsafe.Pointer(&pid)),
 	)
 	if ret == 0 {
 		return 0, fmt.Errorf("GetWindowThreadProcessId failed for hwnd 0x%x: %v", hwnd, callErr)
 	}
-	return int32(pid), nil
+	return pid, nil
 }
