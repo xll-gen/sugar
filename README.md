@@ -100,9 +100,12 @@ sugar.Do(func(ctx sugar.Context) error {
 | `Range`        | `excel.Range`         | `Value` / `SetValue` (2-D SAFEARRAY decode *and* encode — write whole blocks with `[][]interface{}` in one call), `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` |
 | `Names`/`Name` | `excel.Names`, `excel.Name` | `Add` (formula string or `Range`), `Item`, `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete` — via `Workbook.Names()` / `Worksheet.Names()` |
 | `Charts`/`Chart` | `excel.Charts`, `excel.Chart` | `Add(left, top, w, h)`, `Item`, `Count`; `SetSourceData(Range)`, `ChartType`/`SetChartType`, `Name`/`SetName`, `Left/Top/Width/Height`, `SetPosition`, `ToPNG`, `ToPDF`, `Delete` — via `Worksheet.Charts()` |
+| `Pictures`/`Picture` | `excel.Pictures`, `excel.Picture` | `Add(filename, PictureAt/PictureSize/PictureName...)`, `Item`, `Count`; `Name`/`SetName`, geometry get/set, `Delete` — via `Worksheet.Pictures()` |
+| `Shapes`/`Shape` | `excel.Shapes`, `excel.Shape` | `Item`, `Count`, typed `ForEachShape`; `Name`/`SetName`, `Type`, geometry get/set, `SetPosition`, `Delete` — via `Worksheet.Shapes()` |
+| `Font`         | `excel.Font`          | `Name`, `Size`, `Bold`, `Italic`, `Color` (get/set each) — via `Range.Font()`; pack colors with `excel.RGB(r, g, b)` |
 
-Gaps still tracked in [AGENTS.md §2.1](./AGENTS.md): pictures, shapes,
-fonts.
+The xlwings §2.1 object-model roadmap in [AGENTS.md](./AGENTS.md) is now
+fully shipped through P2.
 
 ### Range.Options — xlwings-style value conversion
 

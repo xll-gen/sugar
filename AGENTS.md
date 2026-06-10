@@ -40,9 +40,9 @@ Implement these in priority order. Each must support method chaining via `sugar.
 | `Range`        | `excel.Range`         | mostly done | P0       | Has `Value` (with 2-D SAFEARRAY decode), `SetValue`, `Address`, `Formula`/`SetFormula`, `Formula2`/`SetFormula2`, `NumberFormat`/`SetNumberFormat`, `Cells`, `Offset`, `Resize`, `Rows`, `Columns`, `Row`, `Column`, `Count`, `Clear`, `ClearContents`, `Delete`, `Copy`, `Merge`/`UnMerge`/`MergeCells`, `AutoFit`, `Options(...)` framework (§2.2 — `Scalar`/`Vector`/`Grid`, `Expand("table"|"down"|"right")`, `Header(true)` struct decode, `Empty`, `DateFormat`, `Convert`). Missing: `Font`, `Color`, `End`, `Width`, `Height`, `Insert`, `Sort`, `Find`. |
 | `Name`/`Names` | `excel.Name`, `excel.Names` | done (2026-06-10) | P1 | `name.go`/`names.go`: `Add(name, refersTo)` (string formula or Range), `Item` (by name/index), `Count`, `Contains`, `Name`/`SetName`, `RefersTo`/`SetRefersTo`, `RefersToRange`, `Delete`. Reached via `Workbook.Names()` and `Worksheet.Names()`. Note: `Names.Item` is a *method* in Excel's type library (unlike `Sheets.Item`, a property) — it must be invoked with `Call`, not `Get`. |
 | `Chart`/`Charts` | `excel.Chart`, `excel.Charts` | done (2026-06-10) | P1 | `chart.go`/`charts.go`: `Charts.Add(left, top, width, height)`, `Item` (by name/index — a *method*, use `Call`), `Count`; `Chart` fuses COM's ChartObject+Chart like xlwings: `Name`/`SetName`, `ChartType`/`SetChartType` (typed `ChartType` consts), `SetSourceData(Range)`, `Left/Top/Width/Height`, `SetPosition`, `ToPNG` (Chart.Export), `ToPDF` (ExportAsFixedFormat), `Delete`. Via `Worksheet.Charts()` (`ChartObjects` is a method — `Call`, not `Get`). |
-| `Picture`/`Pictures` | `excel.Picture`, `excel.Pictures` | absent | P1 | `Add(filename, ...)`, `Update`, `Delete`. Used by xlwings' matplotlib bridge. |
-| `Shape`/`Shapes` | `excel.Shape`, `excel.Shapes` | absent | P2  | `Item`, iteration, `Delete`, position/size getters & setters. |
-| `Font`           | `excel.Font`               | absent | P2     | `Name`, `Size`, `Bold`, `Italic`, `Color`. Reached via `Range.Font()`. |
+| `Picture`/`Pictures` | `excel.Picture`, `excel.Pictures` | done (2026-06-10) | P1 | `picture.go`/`pictures.go`: `Add(filename, PictureAt/PictureSize/PictureName...)` via `Shapes.AddPicture`; `Item`/`Count` via the legacy `Worksheet.Pictures` collection — which is a **snapshot** (its Count never grows), so every lookup re-calls `Pictures()` like xlwings' `api` property. `Name`/`SetName`, geometry get/set, `Delete`. |
+| `Shape`/`Shapes` | `excel.Shape`, `excel.Shapes` | done (2026-06-10) | P2  | `shape.go`/`shapes.go`: `Item` (method — `Call`), `Count`, typed `ForEachShape`, `Name`/`SetName`, `Type()` (`ShapeType` MsoShapeType consts), geometry get/set, `SetPosition`, `Delete`. Via `Worksheet.Shapes()`. |
+| `Font`           | `excel.Font`               | done (2026-06-10) | P2     | `font.go`: `Name`, `Size`, `Bold`, `Italic`, `Color` (get/set each) via `Range.Font()`. `excel.RGB(r, g, b)` packs the OLE `&HBBGGRR` color int. |
 
 ### 2.2 Range Value Conversion (xlwings `.options()` analogue)
 
@@ -186,11 +186,15 @@ Resolved in v0.8.0 (2026-06-10, continued):
 * ~~No goroutine-safety tests for `sugar.Go`.~~ — `TestGo_TwoExcelInstancesIsolated` drives two Excel instances on two OS threads concurrently (distinct Hwnds, independent values).
 * ~~`Range.Options(...)` extensions.~~ — Shipped: `Index(n)` leading-column skip, positional struct decode when `Header(false)` (column order = exported field order), and generic `ConvertTo[T]` for compile-time-checked converters.
 
+Resolved in v0.9.0 (2026-06-10):
+
+* ~~Object collections absent: `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.~~ — All shipped; see §2.1 rows. API-breaking rename that came with it: the `Range.Options` dimension knob `Shape`/`ShapeAuto`/`ShapeScalar`/`ShapeVector`/`ShapeGrid` became **`NDim`/`NDimAuto`/`NDimScalar`/`NDimVector`/`NDimGrid`** (xlwings' `ndim`), freeing the `Shape` identifier for the drawing object per the xlwings-naming rule. The `Scalar()`/`Vector()`/`Grid()` option helpers are unchanged.
+* ~~Typed slices need an encode path.~~ — `encodeVariantArray` now widens any Go slice via reflection (`[][]float64`, `[]int`, `[][]string`, …); `[]byte`/`[]string` stay on go-ole's native VT_UI1/VT_BSTR paths to avoid changing behavior for non-Excel COM servers. Encode→decode round-trip unit tests in `safearray_test.go` run without Excel (SafeArray APIs need no CoInitialize). Still open below: `[]T` struct rows.
+
 Still open:
 
-* Object collections still absent (P1+): `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
-* `Range.SetValue` accepts only `[]interface{}`/`[][]interface{}` slices; typed slices (`[][]float64`, `[]string` as a column, `[]T` struct rows — the write-direction mirror of `Options(Header(true)).Get`) still need an encode path.
-* Integration tests boot a fresh Excel per test (~2–3 s each, full tagged suite ≈95 s). Share one hidden instance via `TestMain` + per-test workbook to cut wall-clock.
+* `[]T` struct-row *write* support (the mirror of `Options(Header(true)).Get`): encode exported fields positionally, optionally emitting a header row. Excel-layer work (field-name knowledge), not core.
+* Integration tests boot a fresh Excel per test (~2–3 s each, full tagged suite ≈115 s). A shared instance must respect COM apartment rules: tests run on arbitrary goroutines, so sharing raw IDispatch is unsafe — the workable design is one Excel process + per-test `GetActive` attach (ROT marshaling). Worth doing once suite time hurts.
 
 ## 7. Documentation Standards
 

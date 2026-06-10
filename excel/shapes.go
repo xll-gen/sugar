@@ -1,0 +1,46 @@
+//go:build windows
+
+package excel
+
+import (
+	"github.com/xll-gen/sugar"
+)
+
+// Shapes is the drawing-layer collection of a worksheet — the Go equivalent
+// of xlwings' `shapes`.
+//
+// xlwings reference: https://docs.xlwings.org/en/stable/api/shapes.html
+type Shapes interface {
+	sugar.Chain
+	// Item returns a shape by 1-based index or by name.
+	Item(index interface{}) Shape
+	// Count returns the number of shapes on the worksheet.
+	Count() (int32, error)
+	// ForEachShape iterates the collection with the typed wrapper. Iteration
+	// stops when fn returns a non-nil error (sugar.ErrForEachBreak to stop
+	// cleanly); the error surfaces on the returned chain like sugar.ForEach.
+	ForEachShape(fn func(s Shape) error) sugar.Chain
+}
+
+type shapes struct {
+	sugar.Chain
+}
+
+func (s *shapes) Item(index interface{}) Shape {
+	// Shapes.Item is a method in the type library, like Names.Item.
+	return &shape{s.Call("Item", index)}
+}
+
+func (s *shapes) Count() (int32, error) {
+	v, err := s.Get("Count").Value()
+	if err != nil {
+		return 0, err
+	}
+	return toInt32(v), nil
+}
+
+func (s *shapes) ForEachShape(fn func(sh Shape) error) sugar.Chain {
+	return s.ForEach(func(item sugar.Chain) error {
+		return fn(&shape{item})
+	})
+}

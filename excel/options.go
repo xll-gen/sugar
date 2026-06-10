@@ -21,31 +21,33 @@ const (
 	xlToRight int32 = -4161
 )
 
-// Shape is the dimension forcing knob exposed by xlwings' `.options(ndim=...)`.
-// Scalar / Vector / Grid mirror xlwings' implicit ndim=0/1/2.
-type Shape int
+// NDim is the dimension-forcing knob exposed by xlwings' `.options(ndim=...)`.
+// Scalar / Vector / Grid mirror xlwings' implicit ndim=0/1/2. (Named NDim
+// rather than Shape to leave the Shape identifier for the drawing-layer
+// object, matching xlwings.)
+type NDim int
 
 const (
-	// ShapeAuto leaves the result in its natural xlwings shape: a single
+	// NDimAuto leaves the result in its natural xlwings shape: a single
 	// scalar for 1×1, a flat `[]interface{}` for 1×N or N×1, and
 	// `[][]interface{}` for everything else. This is the default.
-	ShapeAuto Shape = iota
-	// ShapeScalar forces a 1×1 read. The Value()/Get() call errors out if
+	NDimAuto NDim = iota
+	// NDimScalar forces a 1×1 read. The Value()/Get() call errors out if
 	// the underlying range has more than one cell.
-	ShapeScalar
-	// ShapeVector forces a 1-D slice. `1×N` is read row-wise; `N×1` is read
+	NDimScalar
+	// NDimVector forces a 1-D slice. `1×N` is read row-wise; `N×1` is read
 	// column-wise. Anything else returns an error.
-	ShapeVector
-	// ShapeGrid forces a `[][]interface{}` result, even for `1×1`, `1×N`,
+	NDimVector
+	// NDimGrid forces a `[][]interface{}` result, even for `1×1`, `1×N`,
 	// or `N×1` ranges. Equivalent to xlwings' `ndim=2`.
-	ShapeGrid
+	NDimGrid
 )
 
 // rangeOptions accumulates the knobs passed to Range.Options(...). It is an
 // internal record; callers use the exported option helpers (Scalar, Vector,
 // Grid, Header, Expand, Empty, DateFormat, Convert).
 type rangeOptions struct {
-	shape      Shape
+	shape      NDim
 	header     bool
 	index      int
 	empty      interface{}
@@ -62,14 +64,14 @@ type RangeOption func(*rangeOptions)
 // Scalar is the xlwings `.options(ndim=0)` analogue: force a single-cell read
 // and return the underlying scalar (or error on a multi-cell range).
 func Scalar() RangeOption {
-	return func(o *rangeOptions) { o.shape = ShapeScalar }
+	return func(o *rangeOptions) { o.shape = NDimScalar }
 }
 
 // Vector is the xlwings `.options(ndim=1)` analogue: force a 1-D slice result.
 // Vector1D is provided as a verbose alias for callers who prefer the explicit
 // dimensionality in the name.
 func Vector() RangeOption {
-	return func(o *rangeOptions) { o.shape = ShapeVector }
+	return func(o *rangeOptions) { o.shape = NDimVector }
 }
 
 // Vector1D is a verbose alias for Vector(). It exists only to match readers
@@ -79,7 +81,7 @@ func Vector1D() RangeOption { return Vector() }
 // Grid is the xlwings `.options(ndim=2)` analogue: always return [][]interface{}
 // (one row per Excel row). Vector2D is a verbose alias.
 func Grid() RangeOption {
-	return func(o *rangeOptions) { o.shape = ShapeGrid }
+	return func(o *rangeOptions) { o.shape = NDimGrid }
 }
 
 // Vector2D is a verbose alias for Grid().
@@ -405,25 +407,25 @@ func applyEmpty(raw [][]interface{}, fill interface{}) {
 }
 
 // shapeResult coerces a [][]interface{} into the shape the caller asked for.
-// ShapeAuto reproduces xlwings' implicit rules: 1×1 → scalar, 1×N or N×1 →
+// NDimAuto reproduces xlwings' implicit rules: 1×1 → scalar, 1×N or N×1 →
 // flat slice, everything else → 2-D grid.
-func shapeResult(raw [][]interface{}, shape Shape) (interface{}, error) {
+func shapeResult(raw [][]interface{}, shape NDim) (interface{}, error) {
 	rows := len(raw)
 	cols := 0
 	if rows > 0 {
 		cols = len(raw[0])
 	}
 	switch shape {
-	case ShapeScalar:
+	case NDimScalar:
 		if rows != 1 || cols != 1 {
 			return nil, fmt.Errorf("Options.Scalar: range is %dx%d, expected 1x1", rows, cols)
 		}
 		return raw[0][0], nil
-	case ShapeVector:
+	case NDimVector:
 		return flatten(raw)
-	case ShapeGrid:
+	case NDimGrid:
 		return raw, nil
-	default: // ShapeAuto
+	default: // NDimAuto
 		if rows == 1 && cols == 1 {
 			return raw[0][0], nil
 		}
@@ -435,7 +437,7 @@ func shapeResult(raw [][]interface{}, shape Shape) (interface{}, error) {
 	}
 }
 
-// flatten turns a 2-D read into a 1-D slice. Used by ShapeVector. Returns an
+// flatten turns a 2-D read into a 1-D slice. Used by NDimVector. Returns an
 // error if the input is genuinely 2-D (multiple rows AND multiple cols).
 func flatten(raw [][]interface{}) ([]interface{}, error) {
 	rows := len(raw)

@@ -38,6 +38,12 @@ type Worksheet interface {
 	// Charts returns the worksheet's embedded-chart collection. Equivalent
 	// to xlwings' `sheet.charts`.
 	Charts() Charts
+	// Shapes returns the worksheet's drawing-layer collection. Equivalent
+	// to xlwings' `sheet.shapes`.
+	Shapes() Shapes
+	// Pictures returns the worksheet's picture collection. Equivalent to
+	// xlwings' `sheet.pictures`.
+	Pictures() Pictures
 	// Name returns the worksheet's tab name.
 	Name() (string, error)
 	// SetName renames the worksheet.
@@ -90,6 +96,17 @@ func (w *worksheet) Charts() Charts {
 	// Worksheet.ChartObjects is a method (no-arg call returns the whole
 	// collection), not a property.
 	return &charts{w.Call("ChartObjects")}
+}
+
+func (w *worksheet) Shapes() Shapes {
+	return &shapes{w.Get("Shapes")}
+}
+
+func (w *worksheet) Pictures() Pictures {
+	// The legacy Worksheet.Pictures collection (a method, like
+	// ChartObjects) provides Item/Count; Add goes through Shapes.AddPicture
+	// — both wrapped together, mirroring xlwings.
+	return &pictures{Chain: w.Call("Pictures"), sheet: w.Chain}
 }
 
 func (w *worksheet) Name() (string, error) {

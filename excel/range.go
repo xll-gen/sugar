@@ -75,6 +75,10 @@ type Range interface {
 	// AutoFit auto-fits the column width (or row height) for this range.
 	AutoFit() error
 
+	// Font returns the character-formatting object for this range.
+	// Equivalent to xlwings' `range.font`.
+	Font() Font
+
 	// Options is the Go equivalent of xlwings' `Range.options(...)`. It
 	// returns an OptionedRange that decodes the range on .Value() / .Get()
 	// with the supplied conversion knobs (Scalar/Vector/Grid, Expand,
@@ -205,4 +209,8 @@ func (r *excelRange) MergeCells() (bool, error) {
 
 func (r *excelRange) AutoFit() error {
 	return r.Call("EntireColumn").Call("AutoFit").Err()
+}
+
+func (r *excelRange) Font() Font {
+	return &font{r.Get("Font")}
 }

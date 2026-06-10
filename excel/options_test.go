@@ -35,7 +35,7 @@ func TestShapeResult_Auto(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := shapeResult(c.in, ShapeAuto)
+			got, err := shapeResult(c.in, NDimAuto)
 			if err != nil {
 				t.Fatalf("shapeResult error: %v", err)
 			}
@@ -49,36 +49,36 @@ func TestShapeResult_Auto(t *testing.T) {
 // TestShapeResult_Scalar enforces 1×1 input and errors on mismatch — this is
 // the xlwings `.options(ndim=0)` rule.
 func TestShapeResult_Scalar(t *testing.T) {
-	got, err := shapeResult([][]interface{}{{42.0}}, ShapeScalar)
+	got, err := shapeResult([][]interface{}{{42.0}}, NDimScalar)
 	if err != nil {
 		t.Fatalf("Scalar accepted 1x1: %v", err)
 	}
 	if got != 42.0 {
 		t.Errorf("Scalar 1x1: got %v, want 42.0", got)
 	}
-	if _, err := shapeResult([][]interface{}{{1, 2}}, ShapeScalar); err == nil {
+	if _, err := shapeResult([][]interface{}{{1, 2}}, NDimScalar); err == nil {
 		t.Errorf("Scalar(1x2) should error, got nil")
 	}
 }
 
 // TestShapeResult_Vector flattens 1×N and N×1 and rejects genuine 2-D blocks.
 func TestShapeResult_Vector(t *testing.T) {
-	got, err := shapeResult([][]interface{}{{1, 2, 3}}, ShapeVector)
+	got, err := shapeResult([][]interface{}{{1, 2, 3}}, NDimVector)
 	if err != nil || !reflect.DeepEqual(got, []interface{}{1, 2, 3}) {
 		t.Errorf("Vector(1x3): got %v err=%v", got, err)
 	}
-	got, err = shapeResult([][]interface{}{{1}, {2}, {3}}, ShapeVector)
+	got, err = shapeResult([][]interface{}{{1}, {2}, {3}}, NDimVector)
 	if err != nil || !reflect.DeepEqual(got, []interface{}{1, 2, 3}) {
 		t.Errorf("Vector(3x1): got %v err=%v", got, err)
 	}
-	if _, err := shapeResult([][]interface{}{{1, 2}, {3, 4}}, ShapeVector); err == nil {
+	if _, err := shapeResult([][]interface{}{{1, 2}, {3, 4}}, NDimVector); err == nil {
 		t.Errorf("Vector(2x2) should error, got nil")
 	}
 }
 
 // TestShapeResult_Grid always returns [][]interface{} — even for 1×1.
 func TestShapeResult_Grid(t *testing.T) {
-	got, err := shapeResult([][]interface{}{{"x"}}, ShapeGrid)
+	got, err := shapeResult([][]interface{}{{"x"}}, NDimGrid)
 	if err != nil {
 		t.Fatalf("Grid(1x1): %v", err)
 	}
@@ -196,8 +196,8 @@ func TestOptions_ConfigAccumulation(t *testing.T) {
 	} {
 		fn(&o)
 	}
-	if o.shape != ShapeGrid {
-		t.Errorf("shape: got %v, want ShapeGrid (later option wins)", o.shape)
+	if o.shape != NDimGrid {
+		t.Errorf("shape: got %v, want NDimGrid (later option wins)", o.shape)
 	}
 	if !o.header {
 		t.Errorf("header: got false, want true")
@@ -259,7 +259,7 @@ func TestConvert_Error(t *testing.T) {
 func TestGet_ScalarPointer(t *testing.T) {
 	or := &optionedRange{
 		rng:  &fakeRange{value: 42.5},
-		opts: rangeOptions{shape: ShapeScalar},
+		opts: rangeOptions{shape: NDimScalar},
 	}
 	var f float64
 	if err := or.Get(&f); err != nil {
@@ -483,6 +483,7 @@ func (f *fakeRange) UnMerge() error                            { panic("not impl
 func (f *fakeRange) MergeCells() (bool, error)                 { panic("not implemented") }
 func (f *fakeRange) AutoFit() error                            { panic("not implemented") }
 func (f *fakeRange) Options(opts ...RangeOption) OptionedRange { panic("not implemented") }
+func (f *fakeRange) Font() Font                                { panic("not implemented") }
 
 // sugar.Chain methods (embedded in Range). These panic for the same reason.
 func (f *fakeRange) Get(prop string, params ...interface{}) sugar.Chain {
