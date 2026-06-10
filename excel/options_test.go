@@ -12,7 +12,6 @@ package excel
 import (
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -274,16 +273,47 @@ func TestGet_ScalarPointer(t *testing.T) {
 // TestGet_StructSliceRequiresHeader matches the xlwings rule that the
 // header row's presence is opt-in: without Header(true) the decode refuses
 // to guess the column->field mapping.
-func TestGet_StructSliceRequiresHeader(t *testing.T) {
-	type Row struct{ Name string }
+func TestGet_StructSlicePositional(t *testing.T) {
+	type Row struct {
+		Name string
+		Age  int
+	}
+	// Without Header(true) every row is data; columns map to exported
+	// fields in declaration order.
 	or := &optionedRange{
-		rng:  &fakeRange{value: [][]interface{}{{"name"}, {"alice"}}},
+		rng: &fakeRange{value: [][]interface{}{
+			{"alice", 30.0},
+			{"bob", 25.0},
+		}},
 		opts: rangeOptions{},
 	}
 	var out []Row
-	err := or.Get(&out)
-	if err == nil || !strings.Contains(err.Error(), "Header(true)") {
-		t.Errorf("expected Header(true) error, got %v", err)
+	if err := or.Get(&out); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := []Row{{"alice", 30}, {"bob", 25}}
+	if !reflect.DeepEqual(out, want) {
+		t.Errorf("got %+v, want %+v", out, want)
+	}
+}
+
+// TestGet_StructSlicePositional_ShortRow checks lenient handling: rows with
+// fewer columns than fields leave the remaining fields at zero values.
+func TestGet_StructSlicePositional_ShortRow(t *testing.T) {
+	type Row struct {
+		Name string
+		Age  int
+	}
+	or := &optionedRange{
+		rng:  &fakeRange{value: [][]interface{}{{"alice"}}},
+		opts: rangeOptions{},
+	}
+	var out []Row
+	if err := or.Get(&out); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(out) != 1 || out[0].Name != "alice" || out[0].Age != 0 {
+		t.Errorf("got %+v, want [{alice 0}]", out)
 	}
 }
 
@@ -306,6 +336,82 @@ func TestGet_StructSliceWithHeader(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].Name != "alice" || out[0].Age != 30 {
 		t.Errorf("got %+v, want [{alice 30}]", out)
+	}
+}
+
+// TestApplyIndex covers the xlwings `index=n` analogue: leading columns are
+// dropped, n<=0 is a no-op, and rows shorter than n become empty.
+func TestApplyIndex(t *testing.T) {
+	raw := [][]interface{}{
+		{"idx1", "a", 1.0},
+		{"idx2", "b", 2.0},
+	}
+	got := applyIndex(raw, 1)
+	want := [][]interface{}{{"a", 1.0}, {"b", 2.0}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Index(1): got %v, want %v", got, want)
+	}
+
+	if !reflect.DeepEqual(applyIndex(raw, 0), raw) {
+		t.Errorf("Index(0) should be a no-op")
+	}
+	if !reflect.DeepEqual(applyIndex(raw, -1), raw) {
+		t.Errorf("Index(-1) should be a no-op")
+	}
+
+	short := applyIndex([][]interface{}{{"only"}}, 2)
+	if len(short) != 1 || len(short[0]) != 0 {
+		t.Errorf("Index past row length should give empty rows, got %v", short)
+	}
+}
+
+// TestGet_IndexWithHeaderDecode combines Index with the header struct
+// decode: the index column disappears before headers are interpreted.
+func TestGet_IndexWithHeaderDecode(t *testing.T) {
+	type Row struct {
+		Name string
+		Age  int
+	}
+	or := &optionedRange{
+		rng: &fakeRange{value: [][]interface{}{
+			{"id", "name", "age"},
+			{1.0, "alice", 30.0},
+		}},
+		opts: rangeOptions{header: true, index: 1},
+	}
+	var out []Row
+	if err := or.Get(&out); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(out) != 1 || out[0].Name != "alice" || out[0].Age != 30 {
+		t.Errorf("got %+v, want [{alice 30}]", out)
+	}
+}
+
+// TestConvertTo_TypedDestination verifies the generic, compile-time-checked
+// Convert flavor feeding a *T destination.
+func TestConvertTo_TypedDestination(t *testing.T) {
+	type Stats struct{ Sum float64 }
+	or := &optionedRange{
+		rng: &fakeRange{value: [][]interface{}{{1.0, 2.0}, {3.0, 4.0}}},
+	}
+	opt := ConvertTo(func(raw [][]interface{}) (Stats, error) {
+		s := Stats{}
+		for _, row := range raw {
+			for _, c := range row {
+				s.Sum += c.(float64)
+			}
+		}
+		return s, nil
+	})
+	opt(&or.opts)
+
+	var stats Stats
+	if err := or.Get(&stats); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stats.Sum != 10.0 {
+		t.Errorf("Sum: got %v, want 10.0", stats.Sum)
 	}
 }
 

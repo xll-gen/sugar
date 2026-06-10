@@ -47,6 +47,7 @@ const (
 type rangeOptions struct {
 	shape      Shape
 	header     bool
+	index      int
 	empty      interface{}
 	dateFormat string
 	expand     string // "", "table", "down", "right"
@@ -90,10 +91,18 @@ func Vector2D() RangeOption { return Grid() }
 //
 // When true, the first row is consumed as headers; remaining rows become
 // elements of the destination slice. The default false treats every row as
-// data and requires position-based decoding (not yet implemented — pass true
-// or use Convert for now).
+// data and decodes positionally: column 0 fills the struct's first exported
+// field, column 1 the second, and so on.
 func Header(on bool) RangeOption {
 	return func(o *rangeOptions) { o.header = on }
+}
+
+// Index drops the first n columns of the read before any further conversion.
+// This is the Go analogue of xlwings' `.options(index=n)` for DataFrames,
+// where the leading columns form the index rather than data. n <= 0 is a
+// no-op.
+func Index(n int) RangeOption {
+	return func(o *rangeOptions) { o.index = n }
 }
 
 // Empty replaces nil cells with the provided value during decoding. Mirrors
@@ -137,6 +146,19 @@ func Convert(fn func(raw [][]interface{}) (interface{}, error)) RangeOption {
 	return func(o *rangeOptions) { o.convert = fn }
 }
 
+// ConvertTo is the type-safe flavor of Convert: the converter returns a
+// concrete T instead of interface{}, so its signature is checked at compile
+// time. Pair it with a *T destination in Get:
+//
+//	rng.Options(excel.ConvertTo(func(raw [][]interface{}) (Stats, error) {
+//	    ...
+//	})).Get(&stats)
+func ConvertTo[T any](fn func(raw [][]interface{}) (T, error)) RangeOption {
+	return Convert(func(raw [][]interface{}) (interface{}, error) {
+		return fn(raw)
+	})
+}
+
 // OptionedRange is the deferred-read view returned by Range.Options(...). It
 // captures the original Range plus a set of conversion options and runs the
 // conversion lazily on Value()/Get().
@@ -155,7 +177,8 @@ type OptionedRange interface {
 	//   - *string, *float64, *int, *int64, *bool, *time.Time — scalar reads.
 	//   - *[]any          — flat 1-D copy of the read.
 	//   - *[][]any        — full 2-D grid.
-	//   - *[]MyStruct     — struct-by-header decode (requires Header(true)).
+	//   - *[]MyStruct     — struct decode: by header row with Header(true),
+	//     positionally (column order = exported field order) without.
 	//
 	// Returns an error if the read shape and destination cannot be reconciled.
 	Get(dst interface{}) error
@@ -272,6 +295,7 @@ func (o *optionedRange) Value() (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw = applyIndex(raw, o.opts.index)
 	if o.opts.empty != nil {
 		applyEmpty(raw, o.opts.empty)
 	}
@@ -298,6 +322,7 @@ func (o *optionedRange) Get(dst interface{}) error {
 	if err != nil {
 		return err
 	}
+	raw = applyIndex(raw, o.opts.index)
 	if o.opts.empty != nil {
 		applyEmpty(raw, o.opts.empty)
 	}
@@ -309,16 +334,16 @@ func (o *optionedRange) Get(dst interface{}) error {
 		return assign(dv.Elem(), out)
 	}
 	// Struct slice decode: detect *[]Struct destinations even when shape is
-	// unset. Header(true) is required to know which column maps to which
-	// field; without it we can only fill *[]any / *[][]any.
+	// unset. With Header(true) the first row names the target fields; without
+	// it every row is data and columns map to exported fields positionally.
 	elem := dv.Elem()
 	if elem.Kind() == reflect.Slice {
 		et := elem.Type().Elem()
 		if et.Kind() == reflect.Struct && et != reflect.TypeOf(time.Time{}) {
-			if !o.opts.header {
-				return errors.New("Options.Get: struct-slice destination requires Header(true)")
+			if o.opts.header {
+				return decodeStructSlice(elem, raw, o.opts.dateFormat)
 			}
-			return decodeStructSlice(elem, raw, o.opts.dateFormat)
+			return decodeStructSlicePositional(elem, raw, o.opts.dateFormat)
 		}
 	}
 	val, err := shapeResult(raw, o.opts.shape)
@@ -347,6 +372,24 @@ func readGrid(r Range) ([][]interface{}, error) {
 	default:
 		return [][]interface{}{{t}}, nil
 	}
+}
+
+// applyIndex drops the first n columns of every row — the xlwings
+// `index=n` analogue. Rows shorter than n become empty rows rather than
+// erroring, matching the lenient decode style of the rest of the pipeline.
+func applyIndex(raw [][]interface{}, n int) [][]interface{} {
+	if n <= 0 {
+		return raw
+	}
+	out := make([][]interface{}, len(raw))
+	for r := range raw {
+		if n >= len(raw[r]) {
+			out[r] = []interface{}{}
+			continue
+		}
+		out[r] = raw[r][n:]
+	}
+	return out
 }
 
 // applyEmpty walks every cell in raw and replaces nil with the configured
@@ -445,9 +488,10 @@ func decodeStructSlice(dst reflect.Value, raw [][]interface{}, dateFormat string
 			colToField[ci] = f.Index[0]
 			continue
 		}
-		// case-insensitive fallback
+		// case-insensitive fallback (exported fields only — an unexported
+		// fold match would fail CanSet later)
 		for fi := 0; fi < st.NumField(); fi++ {
-			if strings.EqualFold(st.Field(fi).Name, name) {
+			if st.Field(fi).PkgPath == "" && strings.EqualFold(st.Field(fi).Name, name) {
 				colToField[ci] = fi
 				break
 			}
@@ -463,6 +507,36 @@ func decodeStructSlice(dst reflect.Value, raw [][]interface{}, dateFormat string
 			}
 			if err := assignField(item.Field(fi), row[ci], dateFormat); err != nil {
 				return fmt.Errorf("row %d, column %q: %w", r, headers[ci], err)
+			}
+		}
+		out = reflect.Append(out, item)
+	}
+	dst.Set(out)
+	return nil
+}
+
+// decodeStructSlicePositional decodes every row of raw into one struct,
+// mapping column 0 to the struct's first exported field, column 1 to the
+// second, and so on — the Header(false) counterpart of decodeStructSlice.
+// Extra columns are ignored; missing columns leave fields at their zero
+// value.
+func decodeStructSlicePositional(dst reflect.Value, raw [][]interface{}, dateFormat string) error {
+	st := dst.Type().Elem()
+	var fields []int
+	for fi := 0; fi < st.NumField(); fi++ {
+		if st.Field(fi).PkgPath == "" { // exported only
+			fields = append(fields, fi)
+		}
+	}
+	out := reflect.MakeSlice(dst.Type(), 0, len(raw))
+	for r, row := range raw {
+		item := reflect.New(st).Elem()
+		for ci, fi := range fields {
+			if ci >= len(row) {
+				break
+			}
+			if err := assignField(item.Field(fi), row[ci], dateFormat); err != nil {
+				return fmt.Errorf("row %d, column %d: %w", r, ci, err)
 			}
 		}
 		out = reflect.Append(out, item)

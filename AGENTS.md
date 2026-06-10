@@ -179,12 +179,18 @@ Resolved in v0.8.0 (2026-06-10):
 * ~~`Range.SetValue([][]interface{})` panicked for the same reason — there was no SAFEARRAY *encode* path, only decode.~~ — `safearray.go` now has `encodeVariantArray` (1-D `[]interface{}` and 2-D `[][]interface{}` → `VT_ARRAY|VT_VARIANT`), with cell support for nil/bool/string/all int widths/floats/`time.Time` (VT_DATE, wall-clock). Block writes work in one COM round trip; ragged 2-D input is a chain error. COM tests: `normalize_com_test.go` (core), `TestRange_SetValue2D` (excel).
 * ~~`Name`/`Names` absent (P1).~~ — Shipped; see §2.1 row.
 
+Resolved in v0.8.0 (2026-06-10, continued):
+
+* ~~Value-result chains leaked their VARIANTs (BSTR per string property read).~~ — `handleResult` now arena-tracks value chains; `Release()` VariantClears them at scope end. Regression test: `TestValueChainsAreTracked`.
+* ~~`sugar.Do` failed on threads the host already CoInitialize'd (S_FALSE surfaced as error by go-ole); RPC_E_CHANGED_MODE (MTA thread) also unhandled.~~ — `initializeCOM` in runner.go treats S_FALSE as success-owing-CoUninitialize and RPC_E_CHANGED_MODE as success-without. Critical for xll-gen hosts. Test: `TestDo_OnPreInitializedSTAThread`.
+* ~~No goroutine-safety tests for `sugar.Go`.~~ — `TestGo_TwoExcelInstancesIsolated` drives two Excel instances on two OS threads concurrently (distinct Hwnds, independent values).
+* ~~`Range.Options(...)` extensions.~~ — Shipped: `Index(n)` leading-column skip, positional struct decode when `Header(false)` (column order = exported field order), and generic `ConvertTo[T]` for compile-time-checked converters.
+
 Still open:
 
-* No goroutine-safety tests for `sugar.Go`. Add a regression test that launches two Excel instances on two OS threads and verifies they do not interfere.
 * Object collections still absent (P1+): `Chart`/`Charts`, `Picture`/`Pictures`, `Shape`/`Shapes`, `Font`.
-* `Range.Options(...)` extensions: positional struct decode (without Header(true)), `Index(int)` skip-columns helper, and a `Convert` variant for `*T`-typed destinations.
 * `Range.SetValue` accepts only `[]interface{}`/`[][]interface{}` slices; typed slices (`[][]float64`, `[]string` as a column, `[]T` struct rows — the write-direction mirror of `Options(Header(true)).Get`) still need an encode path.
+* Integration tests boot a fresh Excel per test (~2–3 s each, full tagged suite ≈95 s). Share one hidden instance via `TestMain` + per-test workbook to cut wall-clock.
 
 ## 7. Documentation Standards
 
