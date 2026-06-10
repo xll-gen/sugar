@@ -155,6 +155,7 @@ The `expression` package allows navigating COM objects using string expressions 
 6.  **Language Requirement**: All documentation (including README and AGENTS.md) and code comments must be written in English.
 7.  **xlwings naming**: When adding an Excel-layer method, mirror the xlwings name and semantics first; deviate only when Go idioms demand it (always document the deviation).
 8.  **One object per file** in `sugar/excel/`: `application.go`, `workbook.go`, `worksheet.go`, `range.go`, `chart.go`, etc. The current single-file `excel.go` should be split as the surface grows.
+    *Package layout (decided 2026-06-10):* `sugar/excel` stays a **single flat package** — do not split the object model into subpackages. The Excel object graph is cyclic (`Worksheet` → `Range` → `Worksheet`, `Name` → `Range`, future `Range` → `Font`), so Go's no-import-cycle rule forces one package, and a single `excel.` namespace mirrors xlwings' single `xw.` namespace. Subpackages are reserved for future *consumers* of the object model with acyclic dependencies (e.g. a v2.x `excel/reports` templating engine, a plotting bridge with heavy deps).
 9.  **Tests are mandatory** for every new Excel-layer method. Use the COM-test harness in `sugar_com_test.go` as a template; gate with `//go:build windows && excel_integration` if Excel must be installed.
 
 ## 6. Known Improvement Backlog
