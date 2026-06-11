@@ -43,6 +43,7 @@ Implement these in priority order. Each must support method chaining via `sugar.
 | `Picture`/`Pictures` | `excel.Picture`, `excel.Pictures` | done (2026-06-10) | P1 | `picture.go`/`pictures.go`: `Add(filename, PictureAt/PictureSize/PictureName...)` via `Shapes.AddPicture`; `Item`/`Count` via the legacy `Worksheet.Pictures` collection — which is a **snapshot** (its Count never grows), so every lookup re-calls `Pictures()` like xlwings' `api` property. `Name`/`SetName`, geometry get/set, `Delete`. |
 | `Shape`/`Shapes` | `excel.Shape`, `excel.Shapes` | done (2026-06-10) | P2  | `shape.go`/`shapes.go`: `Item` (method — `Call`), `Count`, typed `ForEachShape`, `Name`/`SetName`, `Type()` (`ShapeType` MsoShapeType consts), geometry get/set, `SetPosition`, `Delete`. Via `Worksheet.Shapes()`. |
 | `Font`           | `excel.Font`               | done (2026-06-10) | P2     | `font.go`: `Name`, `Size`, `Bold`, `Italic`, `Color` (get/set each) via `Range.Font()`. `excel.RGB(r, g, b)` packs the OLE `&HBBGGRR` color int. |
+| App (multi-instance) | excel.GetApplicationByPID | backlog | P2 | Attach to a specific running Excel by PID; consumer: xll-gen command handlers receive CommandContext.ExcelPID. |
 
 ### 2.2 Range Value Conversion (xlwings `.options()` analogue)
 
