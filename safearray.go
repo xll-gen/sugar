@@ -341,6 +341,16 @@ func getElement(sa unsafe.Pointer, indices []int32) (interface{}, error) {
 		return nil, fmt.Errorf("SafeArrayGetElement failed: 0x%x", hr)
 	}
 	val := v.Value()
+	vt := v.VT
 	v.Clear()
+	// For object-typed cells, v.Value() returned the raw COM interface pointer
+	// (ToIDispatch/ToIUnknown — no AddRef), which v.Clear() has just Released.
+	// Returning val here would hand the caller a dangling pointer (use-after-
+	// free / refcount underflow). A value grid can't represent a live object
+	// anyway, so degrade such cells to nil. Scalars (VT_R8/BSTR/BOOL/DATE) are
+	// copied by Value(), so returning them after Clear is safe.
+	if vt == ole.VT_DISPATCH || vt == ole.VT_UNKNOWN {
+		return nil, nil
+	}
 	return val, nil
 }

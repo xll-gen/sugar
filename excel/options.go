@@ -562,39 +562,44 @@ func decodeStructSlice(dst reflect.Value, raw [][]interface{}, dateFormat string
 	}
 	headers := raw[0]
 	st := dst.Type().Elem()
-	// Build header-name -> field-index map.
-	colToField := make([]int, len(headers))
-	for i := range colToField {
-		colToField[i] = -1
-	}
+	// Build header-name -> field-index-path map. Paths (not single indices)
+	// because FieldByName resolves promoted fields from embedded structs to a
+	// multi-level Index; a nil path means the column has no matching field.
+	colToField := make([][]int, len(headers))
 	for ci, h := range headers {
 		name := strings.TrimSpace(fmt.Sprint(h))
 		if name == "" {
 			continue
 		}
-		// exact match first
-		if f, ok := st.FieldByName(name); ok {
-			colToField[ci] = f.Index[0]
+		// Exact match first (case-sensitive); both lookups traverse embedded
+		// structs and yield a full Index path. We require an exported leaf
+		// (PkgPath == "") so an unexported fold match can't slip through and
+		// fail CanSet later.
+		if f, ok := st.FieldByName(name); ok && f.PkgPath == "" {
+			colToField[ci] = f.Index
 			continue
 		}
-		// case-insensitive fallback (exported fields only — an unexported
-		// fold match would fail CanSet later)
-		for fi := 0; fi < st.NumField(); fi++ {
-			if st.Field(fi).PkgPath == "" && strings.EqualFold(st.Field(fi).Name, name) {
-				colToField[ci] = fi
-				break
-			}
+		// Case-insensitive fallback. FieldByNameFunc (not a top-level NumField
+		// scan) so headers also match fields promoted from embedded structs.
+		if f, ok := st.FieldByNameFunc(func(s string) bool { return strings.EqualFold(s, name) }); ok && f.PkgPath == "" {
+			colToField[ci] = f.Index
 		}
 	}
 	out := reflect.MakeSlice(dst.Type(), 0, len(raw)-1)
 	for r := 1; r < len(raw); r++ {
 		row := raw[r]
 		item := reflect.New(st).Elem()
-		for ci, fi := range colToField {
-			if fi < 0 || ci >= len(row) {
+		for ci, path := range colToField {
+			if path == nil || ci >= len(row) {
 				continue
 			}
-			if err := assignField(item.Field(fi), row[ci], dateFormat); err != nil {
+			// FieldByIndexErr (not FieldByIndex) so a field promoted through a
+			// nil embedded *pointer* is skipped gracefully instead of panicking.
+			fv, err := item.FieldByIndexErr(path)
+			if err != nil {
+				continue
+			}
+			if err := assignField(fv, row[ci], dateFormat); err != nil {
 				return fmt.Errorf("row %d, column %q: %w", r, headers[ci], err)
 			}
 		}
