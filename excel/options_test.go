@@ -126,6 +126,39 @@ func TestDecodeStructSlice_Headers(t *testing.T) {
 	}
 }
 
+// TestDecodeStructSlice_EmbeddedStruct verifies that headers matching fields
+// promoted from an embedded struct decode into the promoted field, not the
+// embedded struct itself. FieldByName returns a multi-level Index path for
+// promoted fields; storing only Index[0] (the embedded field's index) and
+// using Field() would target the embedded struct and fail to assign a scalar.
+func TestDecodeStructSlice_EmbeddedStruct(t *testing.T) {
+	type Base struct {
+		Name string
+		Age  int
+	}
+	type Row struct {
+		Base
+		Active bool
+	}
+	raw := [][]interface{}{
+		{"name", "age", "active"},
+		{"alice", 30.0, true},
+		{"bob", 25.0, false},
+	}
+	var out []Row
+	dv := reflect.ValueOf(&out).Elem()
+	if err := decodeStructSlice(dv, raw, ""); err != nil {
+		t.Fatalf("decodeStructSlice: %v", err)
+	}
+	want := []Row{
+		{Base: Base{Name: "alice", Age: 30}, Active: true},
+		{Base: Base{Name: "bob", Age: 25}, Active: false},
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Errorf("got %+v, want %+v", out, want)
+	}
+}
+
 // TestDecodeStructSlice_UnknownHeader verifies an unknown header is silently
 // skipped (xlwings parity — pandas decode is lenient).
 func TestDecodeStructSlice_UnknownHeader(t *testing.T) {
