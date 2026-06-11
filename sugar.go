@@ -382,30 +382,51 @@ func (c *chain) ForEach(callback func(item Chain) error) Chain {
 			break
 		}
 
-		if itemVar.VT == ole.VT_DISPATCH {
-			itemDisp := itemVar.ToIDispatch()
+		// Resolve the item to an IDispatch we own one reference to. A
+		// VT_DISPATCH item is used directly (AddRef so it outlives itemVar's
+		// Clear); a VT_UNKNOWN item is queried for IDispatch (QueryInterface
+		// returns a freshly AddRef'd interface), mirroring the _NewEnum
+		// handling above. Previously only VT_DISPATCH was handled, so
+		// collections whose items enumerate as IUnknown were silently dropped.
+		var itemDisp *ole.IDispatch
+		switch itemVar.VT {
+		case ole.VT_DISPATCH:
+			itemDisp = itemVar.ToIDispatch()
 			itemDisp.AddRef()
-
-			itemChain := &chain{
-				disp: itemDisp,
-				ctx:  c.ctx,
-			}
-			if c.ctx != nil {
-				c.ctx.Track(itemChain)
-			}
-
-			cbErr := callback(itemChain)
-
-			if c.ctx == nil {
-				itemChain.Release()
-			}
-
-			if cbErr != nil {
-				itemVar.Clear()
-				return &chain{err: cbErr, ctx: c.ctx}
+		case ole.VT_UNKNOWN:
+			if unk := itemVar.ToIUnknown(); unk != nil {
+				if d, qiErr := unk.QueryInterface(ole.IID_IDispatch); qiErr == nil {
+					itemDisp = d
+				}
 			}
 		}
+
+		if itemDisp == nil {
+			// Not an object (e.g. a scalar enumeration), or it exposes no
+			// IDispatch: there is nothing to hand the callback as a Chain.
+			itemVar.Clear()
+			continue
+		}
+
+		itemChain := &chain{
+			disp: itemDisp,
+			ctx:  c.ctx,
+		}
+		if c.ctx != nil {
+			c.ctx.Track(itemChain)
+		}
+
+		cbErr := callback(itemChain)
+
+		if c.ctx == nil {
+			itemChain.Release()
+		}
+
 		itemVar.Clear()
+
+		if cbErr != nil {
+			return &chain{err: cbErr, ctx: c.ctx}
+		}
 	}
 	return c
 }
