@@ -41,6 +41,20 @@ type Range interface {
 	// SetFormula2 sets a dynamic-array formula. Prefer this over SetFormula
 	// for code that targets Excel 365's array-spill behavior.
 	SetFormula2(formula string) Range
+	// SetFormulaSpill sets a formula using the dynamic-array-native COM
+	// property (Formula2) when available, falling back to the legacy Formula
+	// property on Excel versions that predate dynamic arrays (2016 and
+	// earlier, where the Formula2 property does not exist on the COM Range).
+	//
+	// This is a sugar-specific convenience with no direct xlwings analogue
+	// (xlwings exposes .formula and .formula2 separately). It exists because
+	// writing a UDF call through the legacy Formula property on a
+	// dynamic-array-aware Excel applies implicit intersection — the formula is
+	// stored as `=@MyFunc(...)`, which suppresses the array spill. Formula2 is
+	// the spill-correct property; SetFormulaSpill picks it automatically and
+	// degrades gracefully on old Excel. Use it for any formula expected to
+	// spill (a UDF returning an array, or a native dynamic-array function).
+	SetFormulaSpill(formula string) Range
 	// NumberFormat returns the Excel number format string (e.g. "0.00").
 	NumberFormat() (string, error)
 	// SetNumberFormat applies an Excel number format string.
@@ -175,6 +189,24 @@ func (r *excelRange) Formula2() (string, error) {
 
 func (r *excelRange) SetFormula2(formula string) Range {
 	return &excelRange{r.Put("Formula2", formula)}
+}
+
+// SetFormulaSpill writes via the Formula2 property (dynamic-array native) and,
+// only if that COM Put fails — which is how the missing Formula2 property
+// surfaces on pre-dynamic-array Excel (2016 and earlier) — retries via the
+// legacy Formula property. On modern Excel the first Put succeeds and Formula
+// is never touched; on old Excel the fallback keeps the formula working
+// (without spill, which old Excel cannot do anyway). The returned Range
+// carries the error of whichever path was taken last, so callers can chain
+// .Err() exactly as with SetFormula/SetFormula2.
+func (r *excelRange) SetFormulaSpill(formula string) Range {
+	c := r.Put("Formula2", formula)
+	if c.Err() != nil {
+		// Formula2 unavailable (pre-DA Excel) or rejected — fall back to the
+		// legacy property so the cell still gets the formula.
+		return &excelRange{r.Put("Formula", formula)}
+	}
+	return &excelRange{c}
 }
 
 func (r *excelRange) NumberFormat() (string, error) {

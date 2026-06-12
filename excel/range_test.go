@@ -315,6 +315,48 @@ func TestRange_FormulaRoundTrip(t *testing.T) {
 	})
 }
 
+// TestRange_Formula2RoundTrip writes a dynamic-array formula via SetFormula2
+// and reads it back through Formula2(). A native DA function (SEQUENCE) is
+// used so this is meaningful on dynamic-array Excel (2021+/365); on older
+// Excel SEQUENCE is unknown and the test is effectively skipped via the
+// build tag's integration gate plus the version of Excel installed.
+func TestRange_Formula2RoundTrip(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		rng := sheet.Range("A1")
+		rng.SetFormula2("=SEQUENCE(3,1)")
+		f, err := rng.Formula2()
+		if err != nil {
+			t.Fatalf("Formula2: %v", err)
+		}
+		// Formula2 must not be wrapped in implicit intersection.
+		if len(f) > 0 && f[1] == '@' {
+			t.Errorf("Formula2 got implicit-intersection form %q; want no leading @", f)
+		}
+	})
+}
+
+// TestRange_SetFormulaSpill proves the spill-correct setter: on dynamic-array
+// Excel the formula is stored without the implicit-intersection `@`, so a UDF
+// (or native DA function) spills. We use a native DA function (SEQUENCE) to
+// avoid depending on a registered UDF. The legacy SetFormula path applies
+// implicit intersection to the same input, so this is the regression guard for
+// the showcase's "=@TimesTable(5)" bug.
+func TestRange_SetFormulaSpill(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		rng := sheet.Range("A1")
+		if err := rng.SetFormulaSpill("=SEQUENCE(3,1)").Err(); err != nil {
+			t.Fatalf("SetFormulaSpill: %v", err)
+		}
+		f, err := rng.Formula2()
+		if err != nil {
+			t.Fatalf("Formula2 after SetFormulaSpill: %v", err)
+		}
+		if len(f) > 1 && f[1] == '@' {
+			t.Errorf("SetFormulaSpill stored implicit-intersection form %q; want spill-native (no @)", f)
+		}
+	})
+}
+
 // TestRange_ClearAndMerge covers the destructive helpers added in v0.7.0:
 // ClearContents must drop values but leave the range usable; Merge/Unmerge
 // must round-trip.
