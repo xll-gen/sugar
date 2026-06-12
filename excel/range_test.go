@@ -10,6 +10,7 @@
 package excel_test
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -353,6 +354,44 @@ func TestRange_SetFormulaSpill(t *testing.T) {
 		}
 		if len(f) > 1 && f[1] == '@' {
 			t.Errorf("SetFormulaSpill stored implicit-intersection form %q; want spill-native (no @)", f)
+		}
+	})
+}
+
+// TestRange_SetFormula2Array proves the batch formula setter: a contiguous
+// column of formulas is written through Formula2 in a single COM round-trip,
+// each cell evaluates independently, and none is rewritten into the
+// implicit-intersection `=@...` form. This is the spill-correct, one-call
+// counterpart of looping SetFormulaSpill cell-by-cell (the showcase build's
+// hot path).
+func TestRange_SetFormula2Array(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		// A 3x1 block of independent scalar formulas.
+		block := [][]interface{}{
+			{"=1+1"},
+			{"=2+2"},
+			{"=3+3"},
+		}
+		if err := sheet.Range("A1:A3").SetFormula2Array(block).Err(); err != nil {
+			t.Fatalf("SetFormula2Array: %v", err)
+		}
+		wantVals := []float64{2, 4, 6}
+		for i, want := range wantVals {
+			cell := sheet.Range(fmt.Sprintf("A%d", i+1))
+			f, err := cell.Formula2()
+			if err != nil {
+				t.Fatalf("Formula2(A%d): %v", i+1, err)
+			}
+			if len(f) > 1 && f[1] == '@' {
+				t.Errorf("A%d stored implicit-intersection form %q; want no leading @", i+1, f)
+			}
+			v, err := cell.Value()
+			if err != nil {
+				t.Fatalf("Value(A%d): %v", i+1, err)
+			}
+			if got, ok := v.(float64); !ok || got != want {
+				t.Errorf("A%d = %v (%T); want %v", i+1, v, v, want)
+			}
 		}
 	})
 }

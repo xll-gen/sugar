@@ -41,6 +41,20 @@ type Range interface {
 	// SetFormula2 sets a dynamic-array formula. Prefer this over SetFormula
 	// for code that targets Excel 365's array-spill behavior.
 	SetFormula2(formula string) Range
+	// SetFormula2Array sets a *block* of dynamic-array formulas in a single
+	// COM round-trip — the batch counterpart of SetFormula2. It mirrors
+	// xlwings' array assignment `range.formula2 = [["=A1", "=B1"], ...]`
+	// (Go's static typing forces a separate method from the scalar setter
+	// rather than an overloaded property). The argument is shaped exactly
+	// like SetValue's block form: a `[][]interface{}` (or any 2-D slice such
+	// as `[][]string`) matching the range's shape writes one formula string
+	// per cell, and a 1-D `[]interface{}`/`[]string` writes a single row or
+	// column. Each cell goes through the spill-correct Formula2 property in
+	// one Put, so DA Excel never rewrites the per-cell UDF calls into the
+	// implicit-intersection `=@Fn(...)` form. Use it to collapse a contiguous
+	// formula column/row that would otherwise be N separate SetFormulaSpill
+	// calls into one. Empty/nil cells in the block are written as blanks.
+	SetFormula2Array(formulas interface{}) Range
 	// SetFormulaSpill sets a formula using the dynamic-array-native COM
 	// property (Formula2) when available, falling back to the legacy Formula
 	// property on Excel versions that predate dynamic arrays (2016 and
@@ -189,6 +203,15 @@ func (r *excelRange) Formula2() (string, error) {
 
 func (r *excelRange) SetFormula2(formula string) Range {
 	return &excelRange{r.Put("Formula2", formula)}
+}
+
+// SetFormula2Array writes a block of formulas through the Formula2 property in
+// one COM Put. normalizeParams encodes the 2-D (or 1-D) slice into a
+// VT_ARRAY|VT_VARIANT SAFEARRAY of formula strings, exactly as it does for a
+// SetValue block — so the whole column/row of UDF calls lands array-native
+// (no implicit-intersection `=@Fn(...)` rewrite) in a single round-trip.
+func (r *excelRange) SetFormula2Array(formulas interface{}) Range {
+	return &excelRange{r.Put("Formula2", formulas)}
 }
 
 // SetFormulaSpill writes via the Formula2 property (dynamic-array native) and,

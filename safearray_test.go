@@ -70,6 +70,22 @@ func TestEncodeDecode_TypedSlices(t *testing.T) {
 	}
 }
 
+// TestEncodeDecode_FormulaGrid documents the marshaling path used by
+// Range.SetFormula2Array: a column of formula strings (the shape the showcase
+// build writes to B5:B15) survives the SAFEARRAY encode→decode round trip
+// unchanged. This is Excel-free because SafeArray* APIs need no CoInitialize.
+func TestEncodeDecode_FormulaGrid(t *testing.T) {
+	in := [][]interface{}{
+		{"=Add(2,3)"},
+		{"=Multiply(1.5,4)"},
+		{`=Greet("Excel")`},
+	}
+	got := roundTrip(t, in)
+	if !reflect.DeepEqual(got, in) {
+		t.Errorf("formula grid round-trip: got %v, want %v", got, in)
+	}
+}
+
 func TestEncodeDecode_Date(t *testing.T) {
 	in := time.Date(2026, 6, 10, 15, 30, 0, 0, time.Local)
 	out := roundTrip(t, []interface{}{in})
