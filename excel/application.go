@@ -214,6 +214,43 @@ func NewApplication(ctx sugar.Context) Application {
 
 // GetApplication attaches to a running Excel instance and tracks it on the
 // given context's arena.
+//
+// It resolves the instance through the Running Object Table
+// (`GetActiveObject`), which is process-ambiguous: with multiple Excel
+// instances it returns whichever registered first, and from a process whose
+// COM apartment never saw a ROT registration (e.g. an xll-gen Go server
+// launched as Excel's child) it fails outright with `MK_E_UNAVAILABLE`. When
+// you know the target Excel's PID — xll-gen command handlers receive it as
+// `CommandContext.ExcelPID` — prefer GetApplicationByPID, which attaches to
+// that exact instance via the window chain instead of the ROT.
 func GetApplication(ctx sugar.Context) Application {
 	return &application{ctx.GetActive("Excel.Application")}
+}
+
+// GetApplicationByPID attaches to the specific running Excel instance whose OS
+// process id is pid, and tracks it on the given context's arena. This is the
+// multi-instance-safe attach: it does NOT use the Running Object Table.
+// Instead it walks the `XLMAIN -> XLDESK -> EXCEL7` window chain of the target
+// process and pulls the native object model off the EXCEL7 child via
+// `AccessibleObjectFromWindow(OBJID_NATIVEOM)` — the same route the xll-gen
+// C++ host uses (AGENTS §18.11).
+//
+// Consumers: xll-gen command handlers, which get the hosting Excel's PID via
+// `CommandContext.ExcelPID`. The ROT-based GetApplication fails for them
+// ("cannot attach to Excel: 작업을 사용할 수 없습니다") because the Go server is a
+// separate process with no ROT registration of its own.
+//
+// If the window chain is not reachable yet (Excel has no workbook open, so no
+// EXCEL7 child exists) the returned Application's Err() is non-nil; callers
+// should surface it rather than panicking.
+func GetApplicationByPID(ctx sugar.Context, pid uint32) Application {
+	disp, err := applicationDispatchForPID(pid)
+	if err != nil {
+		return &application{sugar.Error(err)}
+	}
+	// sugar.From AddRefs the dispatch and the arena owns that ref; release the
+	// raw ref applicationDispatchForPID handed us so it is not leaked.
+	ch := ctx.From(disp)
+	disp.Release()
+	return &application{ch}
 }
