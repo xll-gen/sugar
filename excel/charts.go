@@ -72,9 +72,5 @@ func (c *charts) Item(index interface{}) Chart {
 }
 
 func (c *charts) Count() (int32, error) {
-	v, err := c.Get("Count").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(c, "Count")
 }

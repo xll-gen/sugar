@@ -174,19 +174,11 @@ func (r *excelRange) SetValue(value interface{}) Range {
 }
 
 func (r *excelRange) Address() (string, error) {
-	v, err := r.Get("Address").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(r, "Address")
 }
 
 func (r *excelRange) Formula() (string, error) {
-	v, err := r.Get("Formula").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(r, "Formula")
 }
 
 func (r *excelRange) SetFormula(formula string) Range {
@@ -194,11 +186,7 @@ func (r *excelRange) SetFormula(formula string) Range {
 }
 
 func (r *excelRange) Formula2() (string, error) {
-	v, err := r.Get("Formula2").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(r, "Formula2")
 }
 
 func (r *excelRange) SetFormula2(formula string) Range {
@@ -233,11 +221,7 @@ func (r *excelRange) SetFormulaSpill(formula string) Range {
 }
 
 func (r *excelRange) NumberFormat() (string, error) {
-	v, err := r.Get("NumberFormat").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(r, "NumberFormat")
 }
 
 func (r *excelRange) SetNumberFormat(fmt string) Range {
@@ -282,11 +266,11 @@ func (r *excelRange) End(direction string) Range {
 	return &excelRange{r.Get("End", dir)}
 }
 
-func (r *excelRange) Width() (float64, error)  { return shapeFloat(r, "Width") }
-func (r *excelRange) Height() (float64, error) { return shapeFloat(r, "Height") }
+func (r *excelRange) Width() (float64, error)  { return getFloat64(r, "Width") }
+func (r *excelRange) Height() (float64, error) { return getFloat64(r, "Height") }
 
 func (r *excelRange) ColumnWidth() (float64, error) {
-	return shapeFloat(r, "ColumnWidth")
+	return getFloat64(r, "ColumnWidth")
 }
 
 func (r *excelRange) SetColumnWidth(w float64) Range {
@@ -294,7 +278,7 @@ func (r *excelRange) SetColumnWidth(w float64) Range {
 }
 
 func (r *excelRange) RowHeight() (float64, error) {
-	return shapeFloat(r, "RowHeight")
+	return getFloat64(r, "RowHeight")
 }
 
 func (r *excelRange) SetRowHeight(h float64) Range {
@@ -302,11 +286,7 @@ func (r *excelRange) SetRowHeight(h float64) Range {
 }
 
 func (r *excelRange) Color() (int32, error) {
-	v, err := r.Get("Interior").Get("Color").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(r.Get("Interior"), "Color")
 }
 
 func (r *excelRange) SetColor(color int32) Range {
@@ -343,27 +323,15 @@ func (r *excelRange) Find(what string) (Range, bool, error) {
 }
 
 func (r *excelRange) Row() (int32, error) {
-	v, err := r.Get("Row").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(r, "Row")
 }
 
 func (r *excelRange) Column() (int32, error) {
-	v, err := r.Get("Column").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(r, "Column")
 }
 
 func (r *excelRange) Count() (int32, error) {
-	v, err := r.Get("Count").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(r, "Count")
 }
 
 func (r *excelRange) Clear() error          { return r.Call("Clear").Err() }
@@ -374,12 +342,7 @@ func (r *excelRange) Merge() error          { return r.Call("Merge").Err() }
 func (r *excelRange) Unmerge() error        { return r.Call("UnMerge").Err() }
 
 func (r *excelRange) MergeCells() (bool, error) {
-	v, err := r.Get("MergeCells").Value()
-	if err != nil {
-		return false, err
-	}
-	b, _ := v.(bool)
-	return b, nil
+	return getBool(r, "MergeCells")
 }
 
 // AutoFit fits both the column width and the row height of the cells

@@ -32,11 +32,7 @@ func (s *shapes) Item(index interface{}) Shape {
 }
 
 func (s *shapes) Count() (int32, error) {
-	v, err := s.Get("Count").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(s, "Count")
 }
 
 func (s *shapes) ForEachShape(fn func(sh Shape) error) sugar.Chain {

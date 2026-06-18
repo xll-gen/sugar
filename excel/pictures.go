@@ -90,9 +90,5 @@ func (p *pictures) Item(index interface{}) Picture {
 }
 
 func (p *pictures) Count() (int32, error) {
-	v, err := p.collection().Get("Count").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(p.collection(), "Count")
 }

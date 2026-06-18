@@ -72,11 +72,7 @@ func (c *chart) inner() sugar.Chain {
 }
 
 func (c *chart) Name() (string, error) {
-	v, err := c.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(c, "Name")
 }
 
 func (c *chart) SetName(name string) Chart {
@@ -84,11 +80,11 @@ func (c *chart) SetName(name string) Chart {
 }
 
 func (c *chart) ChartType() (ChartType, error) {
-	v, err := c.inner().Get("ChartType").Value()
+	v, err := getInt32(c.inner(), "ChartType")
 	if err != nil {
 		return 0, err
 	}
-	return ChartType(toInt32(v)), nil
+	return ChartType(v), nil
 }
 
 func (c *chart) SetChartType(t ChartType) Chart {
@@ -105,18 +101,10 @@ func (c *chart) SetSourceData(source Range) error {
 	return c.inner().Call("SetSourceData", source).Err()
 }
 
-func (c *chart) Left() (float64, error)   { return c.getFloat("Left") }
-func (c *chart) Top() (float64, error)    { return c.getFloat("Top") }
-func (c *chart) Width() (float64, error)  { return c.getFloat("Width") }
-func (c *chart) Height() (float64, error) { return c.getFloat("Height") }
-
-func (c *chart) getFloat(prop string) (float64, error) {
-	v, err := c.Get(prop).Value()
-	if err != nil {
-		return 0, err
-	}
-	return toFloat64(v), nil
-}
+func (c *chart) Left() (float64, error)   { return getFloat64(c, "Left") }
+func (c *chart) Top() (float64, error)    { return getFloat64(c, "Top") }
+func (c *chart) Width() (float64, error)  { return getFloat64(c, "Width") }
+func (c *chart) Height() (float64, error) { return getFloat64(c, "Height") }
 
 func (c *chart) SetPosition(left, top, width, height float64) Chart {
 	next := c.Put("Left", left).Put("Top", top).Put("Width", width).Put("Height", height)

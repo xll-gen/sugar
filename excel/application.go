@@ -115,11 +115,7 @@ func (a *application) Kill() error {
 }
 
 func (a *application) Version() (string, error) {
-	v, err := a.Get("Version").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(a, "Version")
 }
 
 // PID returns Excel's OS process ID. Excel's COM surface exposes the top-level
@@ -135,23 +131,19 @@ func (a *application) PID() (uint32, error) {
 }
 
 func (a *application) Hwnd() (uintptr, error) {
-	v, err := a.Get("Hwnd").Value()
+	h, err := getInt32(a, "Hwnd")
 	if err != nil {
 		return 0, err
 	}
 	// Excel emits Hwnd as VT_I4; widen to uintptr (no truncation since the
 	// underlying COM value is a 32-bit handle, but uintptr is the correct
 	// handle-sized Go type for window handles).
-	return uintptr(uint32(toInt32(v))), nil
+	return uintptr(uint32(h)), nil
 }
 
 // Visible returns the current value of Excel's `Application.Visible` property.
 func (a *application) Visible() (bool, error) {
-	v, err := a.Get("Visible").Value()
-	if err != nil {
-		return false, err
-	}
-	return toBool(v), nil
+	return getBool(a, "Visible")
 }
 
 // SetVisible sets Excel's `Application.Visible` property. The Application is
@@ -164,11 +156,7 @@ func (a *application) SetVisible(v bool) Application {
 // DisplayAlerts returns the current value of Excel's
 // `Application.DisplayAlerts` property.
 func (a *application) DisplayAlerts() (bool, error) {
-	v, err := a.Get("DisplayAlerts").Value()
-	if err != nil {
-		return false, err
-	}
-	return toBool(v), nil
+	return getBool(a, "DisplayAlerts")
 }
 
 // SetDisplayAlerts sets Excel's `Application.DisplayAlerts` property. Returns
@@ -180,11 +168,7 @@ func (a *application) SetDisplayAlerts(v bool) Application {
 // ScreenUpdating returns the current value of Excel's
 // `Application.ScreenUpdating` property.
 func (a *application) ScreenUpdating() (bool, error) {
-	v, err := a.Get("ScreenUpdating").Value()
-	if err != nil {
-		return false, err
-	}
-	return toBool(v), nil
+	return getBool(a, "ScreenUpdating")
 }
 
 // SetScreenUpdating sets Excel's `Application.ScreenUpdating` property.
@@ -195,11 +179,11 @@ func (a *application) SetScreenUpdating(v bool) Application {
 }
 
 func (a *application) Calculation() (Calculation, error) {
-	v, err := a.Get("Calculation").Value()
+	v, err := getInt32(a, "Calculation")
 	if err != nil {
 		return 0, err
 	}
-	return Calculation(toInt32(v)), nil
+	return Calculation(v), nil
 }
 
 func (a *application) SetCalculation(c Calculation) Application {

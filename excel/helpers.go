@@ -2,7 +2,58 @@
 
 package excel
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/xll-gen/sugar"
+)
+
+// getInt32 reads an int32-family scalar COM property off a chain and coerces it
+// through toInt32. It is the generic form of the repeated
+// `c.Get(prop).Value()` + narrow pattern used by every Count/Index/Row/Column
+// getter. Extra params are forwarded to Get so indexed reads (e.g.
+// Get("Cells", r, c)) work too.
+func getInt32(c sugar.Chain, prop string, params ...interface{}) (int32, error) {
+	v, err := c.Get(prop, params...).Value()
+	if err != nil {
+		return 0, err
+	}
+	return toInt32(v), nil
+}
+
+// getFloat64 reads a numeric scalar COM property off a chain and coerces it
+// through toFloat64. Generic form of the geometry-getter pattern
+// (Left/Top/Width/Height/ColumnWidth/RowHeight).
+func getFloat64(c sugar.Chain, prop string, params ...interface{}) (float64, error) {
+	v, err := c.Get(prop, params...).Value()
+	if err != nil {
+		return 0, err
+	}
+	return toFloat64(v), nil
+}
+
+// getBool reads a boolean scalar COM property off a chain and coerces it
+// through toBool. Routing every bool getter here is the correctness fix: toBool
+// treats legacy 0/-1 VARIANT shapes as false/true, whereas a bare v.(bool)
+// type-assert silently returns false for those.
+func getBool(c sugar.Chain, prop string, params ...interface{}) (bool, error) {
+	v, err := c.Get(prop, params...).Value()
+	if err != nil {
+		return false, err
+	}
+	return toBool(v), nil
+}
+
+// getString reads a string scalar COM property off a chain and coerces it
+// through toString. Generic form of the Name/Address/Formula/Path getter
+// pattern.
+func getString(c sugar.Chain, prop string, params ...interface{}) (string, error) {
+	v, err := c.Get(prop, params...).Value()
+	if err != nil {
+		return "", err
+	}
+	return toString(v), nil
+}
 
 // toInt32 narrows the variety of integer types Excel COM can hand back into a
 // single Go int32. Excel emits Count/Index/Row/Column as VT_I4 most of the

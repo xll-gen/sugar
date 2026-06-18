@@ -110,11 +110,7 @@ func (w *worksheet) Pictures() Pictures {
 }
 
 func (w *worksheet) Name() (string, error) {
-	v, err := w.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(w, "Name")
 }
 
 func (w *worksheet) SetName(name string) Worksheet {
@@ -122,19 +118,15 @@ func (w *worksheet) SetName(name string) Worksheet {
 }
 
 func (w *worksheet) Index() (int32, error) {
-	v, err := w.Get("Index").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(w, "Index")
 }
 
 func (w *worksheet) Visible() (SheetVisibility, error) {
-	v, err := w.Get("Visible").Value()
+	v, err := getInt32(w, "Visible")
 	if err != nil {
 		return 0, err
 	}
-	return SheetVisibility(toInt32(v)), nil
+	return SheetVisibility(v), nil
 }
 
 func (w *worksheet) SetVisible(v SheetVisibility) Worksheet {

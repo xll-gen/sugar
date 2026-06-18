@@ -100,36 +100,19 @@ func (w *workbook) Names() Names {
 }
 
 func (w *workbook) Name() (string, error) {
-	v, err := w.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(w, "Name")
 }
 
 func (w *workbook) FullName() (string, error) {
-	v, err := w.Get("FullName").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(w, "FullName")
 }
 
 func (w *workbook) Path() (string, error) {
-	v, err := w.Get("Path").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(w, "Path")
 }
 
 func (w *workbook) Saved() (bool, error) {
-	v, err := w.Get("Saved").Value()
-	if err != nil {
-		return false, err
-	}
-	b, _ := v.(bool)
-	return b, nil
+	return getBool(w, "Saved")
 }
 
 func (w *workbook) SetSaved(v bool) Workbook {

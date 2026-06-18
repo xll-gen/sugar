@@ -42,11 +42,7 @@ func (n *names) Item(index interface{}) Name {
 }
 
 func (n *names) Count() (int32, error) {
-	v, err := n.Get("Count").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(n, "Count")
 }
 
 func (n *names) Contains(nameStr string) (bool, error) {

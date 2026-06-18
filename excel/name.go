@@ -35,11 +35,7 @@ type name struct {
 }
 
 func (n *name) Name() (string, error) {
-	v, err := n.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(n, "Name")
 }
 
 func (n *name) SetName(s string) Name {
@@ -47,11 +43,7 @@ func (n *name) SetName(s string) Name {
 }
 
 func (n *name) RefersTo() (string, error) {
-	v, err := n.Get("RefersTo").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(n, "RefersTo")
 }
 
 func (n *name) SetRefersTo(refersTo string) Name {

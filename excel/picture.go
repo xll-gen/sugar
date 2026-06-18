@@ -33,21 +33,17 @@ type picture struct {
 }
 
 func (p *picture) Name() (string, error) {
-	v, err := p.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(p, "Name")
 }
 
 func (p *picture) SetName(name string) Picture {
 	return &picture{p.Put("Name", name)}
 }
 
-func (p *picture) Left() (float64, error)   { return shapeFloat(p, "Left") }
-func (p *picture) Top() (float64, error)    { return shapeFloat(p, "Top") }
-func (p *picture) Width() (float64, error)  { return shapeFloat(p, "Width") }
-func (p *picture) Height() (float64, error) { return shapeFloat(p, "Height") }
+func (p *picture) Left() (float64, error)   { return getFloat64(p, "Left") }
+func (p *picture) Top() (float64, error)    { return getFloat64(p, "Top") }
+func (p *picture) Width() (float64, error)  { return getFloat64(p, "Width") }
+func (p *picture) Height() (float64, error) { return getFloat64(p, "Height") }
 
 func (p *picture) SetPosition(left, top, width, height float64) Picture {
 	next := p.Put("Left", left).Put("Top", top).Put("Width", width).Put("Height", height)

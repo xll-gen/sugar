@@ -81,11 +81,7 @@ func (w *worksheets) Add(opts ...AddOption) Worksheet {
 }
 
 func (w *worksheets) Count() (int32, error) {
-	v, err := w.Get("Count").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(w, "Count")
 }
 
 func (w *worksheets) Active() Worksheet {

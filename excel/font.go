@@ -46,11 +46,7 @@ type font struct {
 }
 
 func (f *font) Name() (string, error) {
-	v, err := f.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(f, "Name")
 }
 
 func (f *font) SetName(name string) Font {
@@ -58,11 +54,7 @@ func (f *font) SetName(name string) Font {
 }
 
 func (f *font) Size() (float64, error) {
-	v, err := f.Get("Size").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toFloat64(v), nil
+	return getFloat64(f, "Size")
 }
 
 func (f *font) SetSize(size float64) Font {
@@ -70,12 +62,7 @@ func (f *font) SetSize(size float64) Font {
 }
 
 func (f *font) Bold() (bool, error) {
-	v, err := f.Get("Bold").Value()
-	if err != nil {
-		return false, err
-	}
-	b, _ := v.(bool)
-	return b, nil
+	return getBool(f, "Bold")
 }
 
 func (f *font) SetBold(on bool) Font {
@@ -83,12 +70,7 @@ func (f *font) SetBold(on bool) Font {
 }
 
 func (f *font) Italic() (bool, error) {
-	v, err := f.Get("Italic").Value()
-	if err != nil {
-		return false, err
-	}
-	b, _ := v.(bool)
-	return b, nil
+	return getBool(f, "Italic")
 }
 
 func (f *font) SetItalic(on bool) Font {
@@ -96,11 +78,7 @@ func (f *font) SetItalic(on bool) Font {
 }
 
 func (f *font) Color() (int32, error) {
-	v, err := f.Get("Color").Value()
-	if err != nil {
-		return 0, err
-	}
-	return toInt32(v), nil
+	return getInt32(f, "Color")
 }
 
 func (f *font) SetColor(color int32) Font {

@@ -48,11 +48,7 @@ type shape struct {
 }
 
 func (s *shape) Name() (string, error) {
-	v, err := s.Get("Name").Value()
-	if err != nil {
-		return "", err
-	}
-	return toString(v), nil
+	return getString(s, "Name")
 }
 
 func (s *shape) SetName(name string) Shape {
@@ -60,25 +56,17 @@ func (s *shape) SetName(name string) Shape {
 }
 
 func (s *shape) Type() (ShapeType, error) {
-	v, err := s.Get("Type").Value()
+	v, err := getInt32(s, "Type")
 	if err != nil {
 		return 0, err
 	}
-	return ShapeType(toInt32(v)), nil
+	return ShapeType(v), nil
 }
 
-func (s *shape) Left() (float64, error)   { return shapeFloat(s, "Left") }
-func (s *shape) Top() (float64, error)    { return shapeFloat(s, "Top") }
-func (s *shape) Width() (float64, error)  { return shapeFloat(s, "Width") }
-func (s *shape) Height() (float64, error) { return shapeFloat(s, "Height") }
-
-func shapeFloat(c sugar.Chain, prop string) (float64, error) {
-	v, err := c.Get(prop).Value()
-	if err != nil {
-		return 0, err
-	}
-	return toFloat64(v), nil
-}
+func (s *shape) Left() (float64, error)   { return getFloat64(s, "Left") }
+func (s *shape) Top() (float64, error)    { return getFloat64(s, "Top") }
+func (s *shape) Width() (float64, error)  { return getFloat64(s, "Width") }
+func (s *shape) Height() (float64, error) { return getFloat64(s, "Height") }
 
 func (s *shape) SetPosition(left, top, width, height float64) Shape {
 	next := s.Put("Left", left).Put("Top", top).Put("Width", width).Put("Height", height)
