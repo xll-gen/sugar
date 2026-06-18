@@ -29,16 +29,20 @@ type names struct {
 	sugar.Chain
 }
 
+// wrapNames wraps a chain in the Names typed wrapper. It is the single
+// construction point for the chain -> Names convention.
+func wrapNames(c sugar.Chain) Names { return &names{c} }
+
 func (n *names) Add(nameStr string, refersTo interface{}) Name {
 	// Range values pass through as-is: sugar.Chain arguments are normalized
 	// to raw IDispatch by the core Call.
-	return &name{n.Call("Add", nameStr, refersTo)}
+	return wrapName(n.Call("Add", nameStr, refersTo))
 }
 
 func (n *names) Item(index interface{}) Name {
 	// Names.Item is a method in Excel's type library (unlike Sheets.Item,
 	// which is a parameterized property), so DISPATCH_METHOD is required.
-	return &name{n.Call("Item", index)}
+	return wrapName(n.Call("Item", index))
 }
 
 func (n *names) Count() (int32, error) {

@@ -87,8 +87,12 @@ type application struct {
 	sugar.Chain
 }
 
+// wrapApplication wraps a chain in the Application typed wrapper. It is the
+// single construction point for the chain -> Application convention.
+func wrapApplication(c sugar.Chain) Application { return &application{c} }
+
 func (a *application) Workbooks() Workbooks {
-	return &workbooks{a.Get("Workbooks")}
+	return wrapWorkbooks(a.Get("Workbooks"))
 }
 
 func (a *application) Books() Workbooks {
@@ -96,7 +100,7 @@ func (a *application) Books() Workbooks {
 }
 
 func (a *application) ActiveWorkbook() Workbook {
-	return &workbook{a.Get("ActiveWorkbook")}
+	return wrapWorkbook(a.Get("ActiveWorkbook"))
 }
 
 func (a *application) Quit() error {
@@ -150,7 +154,7 @@ func (a *application) Visible() (bool, error) {
 // returned so callers can fluent-chain further property writes; any COM error
 // is deferred and observable via the next call's .Err().
 func (a *application) SetVisible(v bool) Application {
-	return &application{a.Put("Visible", v)}
+	return wrapApplication(a.Put("Visible", v))
 }
 
 // DisplayAlerts returns the current value of Excel's
@@ -162,7 +166,7 @@ func (a *application) DisplayAlerts() (bool, error) {
 // SetDisplayAlerts sets Excel's `Application.DisplayAlerts` property. Returns
 // the Application for fluent chaining; COM errors are deferred onto the chain.
 func (a *application) SetDisplayAlerts(v bool) Application {
-	return &application{a.Put("DisplayAlerts", v)}
+	return wrapApplication(a.Put("DisplayAlerts", v))
 }
 
 // ScreenUpdating returns the current value of Excel's
@@ -175,7 +179,7 @@ func (a *application) ScreenUpdating() (bool, error) {
 // Returns the Application for fluent chaining; COM errors are deferred onto
 // the chain.
 func (a *application) SetScreenUpdating(v bool) Application {
-	return &application{a.Put("ScreenUpdating", v)}
+	return wrapApplication(a.Put("ScreenUpdating", v))
 }
 
 func (a *application) Calculation() (Calculation, error) {
@@ -187,13 +191,13 @@ func (a *application) Calculation() (Calculation, error) {
 }
 
 func (a *application) SetCalculation(c Calculation) Application {
-	return &application{a.Put("Calculation", int32(c))}
+	return wrapApplication(a.Put("Calculation", int32(c)))
 }
 
 // NewApplication creates a new Excel instance and tracks it on the given
 // context's arena.
 func NewApplication(ctx sugar.Context) Application {
-	return &application{ctx.Create("Excel.Application")}
+	return wrapApplication(ctx.Create("Excel.Application"))
 }
 
 // GetApplication attaches to a running Excel instance and tracks it on the
@@ -208,7 +212,7 @@ func NewApplication(ctx sugar.Context) Application {
 // `CommandContext.ExcelPID` — prefer GetApplicationByPID, which attaches to
 // that exact instance via the window chain instead of the ROT.
 func GetApplication(ctx sugar.Context) Application {
-	return &application{ctx.GetActive("Excel.Application")}
+	return wrapApplication(ctx.GetActive("Excel.Application"))
 }
 
 // GetApplicationByPID attaches to the specific running Excel instance whose OS
@@ -230,11 +234,11 @@ func GetApplication(ctx sugar.Context) Application {
 func GetApplicationByPID(ctx sugar.Context, pid uint32) Application {
 	disp, err := applicationDispatchForPID(pid)
 	if err != nil {
-		return &application{sugar.Error(err)}
+		return wrapApplication(sugar.Error(err))
 	}
 	// sugar.From AddRefs the dispatch and the arena owns that ref; release the
 	// raw ref applicationDispatchForPID handed us so it is not leaked.
 	ch := ctx.From(disp)
 	disp.Release()
-	return &application{ch}
+	return wrapApplication(ch)
 }

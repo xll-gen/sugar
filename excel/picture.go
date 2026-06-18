@@ -32,12 +32,16 @@ type picture struct {
 	sugar.Chain
 }
 
+// wrapPicture wraps a chain in the Picture typed wrapper. It is the single
+// construction point for the chain -> Picture convention.
+func wrapPicture(c sugar.Chain) Picture { return &picture{c} }
+
 func (p *picture) Name() (string, error) {
 	return getString(p, "Name")
 }
 
 func (p *picture) SetName(name string) Picture {
-	return &picture{p.Put("Name", name)}
+	return wrapPicture(p.Put("Name", name))
 }
 
 func (p *picture) Left() (float64, error)   { return getFloat64(p, "Left") }
@@ -47,7 +51,7 @@ func (p *picture) Height() (float64, error) { return getFloat64(p, "Height") }
 
 func (p *picture) SetPosition(left, top, width, height float64) Picture {
 	next := p.Put("Left", left).Put("Top", top).Put("Width", width).Put("Height", height)
-	return &picture{next}
+	return wrapPicture(next)
 }
 
 func (p *picture) Delete() error {

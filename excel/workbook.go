@@ -79,24 +79,28 @@ type workbook struct {
 	sugar.Chain
 }
 
+// wrapWorkbook wraps a chain in the Workbook typed wrapper. It is the single
+// construction point for the chain -> Workbook convention.
+func wrapWorkbook(c sugar.Chain) Workbook { return &workbook{c} }
+
 func (w *workbook) Worksheets() Worksheets {
-	return &worksheets{w.Get("Worksheets")}
+	return wrapWorksheets(w.Get("Worksheets"))
 }
 
 func (w *workbook) Sheets() Worksheets {
-	return &worksheets{w.Get("Sheets")}
+	return wrapWorksheets(w.Get("Sheets"))
 }
 
 func (w *workbook) ActiveSheet() Worksheet {
-	return &worksheet{w.Get("ActiveSheet")}
+	return wrapWorksheet(w.Get("ActiveSheet"))
 }
 
 func (w *workbook) App() Application {
-	return &application{w.Get("Application")}
+	return wrapApplication(w.Get("Application"))
 }
 
 func (w *workbook) Names() Names {
-	return &names{w.Get("Names")}
+	return wrapNames(w.Get("Names"))
 }
 
 func (w *workbook) Name() (string, error) {
@@ -116,7 +120,7 @@ func (w *workbook) Saved() (bool, error) {
 }
 
 func (w *workbook) SetSaved(v bool) Workbook {
-	return &workbook{w.Put("Saved", v)}
+	return wrapWorkbook(w.Put("Saved", v))
 }
 
 func (w *workbook) Activate() error {

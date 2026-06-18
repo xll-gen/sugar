@@ -12,9 +12,9 @@ import (
 type SheetVisibility int32
 
 const (
-	SheetVisible     SheetVisibility = -1 // xlSheetVisible
-	SheetHidden      SheetVisibility = 0  // xlSheetHidden
-	SheetVeryHidden  SheetVisibility = 2  // xlSheetVeryHidden
+	SheetVisible    SheetVisibility = -1 // xlSheetVisible
+	SheetHidden     SheetVisibility = 0  // xlSheetHidden
+	SheetVeryHidden SheetVisibility = 2  // xlSheetVeryHidden
 )
 
 // Worksheet is a single worksheet — the Go equivalent of xlwings' `Sheet`.
@@ -73,40 +73,44 @@ type worksheet struct {
 	sugar.Chain
 }
 
+// wrapWorksheet wraps a chain in the Worksheet typed wrapper. It is the single
+// construction point for the chain -> Worksheet convention.
+func wrapWorksheet(c sugar.Chain) Worksheet { return &worksheet{c} }
+
 func (w *worksheet) Range(cell1 interface{}, cell2 ...interface{}) Range {
 	if len(cell2) > 0 {
-		return &excelRange{w.Get("Range", cell1, cell2[0])}
+		return wrapRange(w.Get("Range", cell1, cell2[0]))
 	}
-	return &excelRange{w.Get("Range", cell1)}
+	return wrapRange(w.Get("Range", cell1))
 }
 
 func (w *worksheet) Cells(row, col interface{}) Range {
-	return &excelRange{w.Get("Cells", row, col)}
+	return wrapRange(w.Get("Cells", row, col))
 }
 
 func (w *worksheet) UsedRange() Range {
-	return &excelRange{w.Get("UsedRange")}
+	return wrapRange(w.Get("UsedRange"))
 }
 
 func (w *worksheet) Names() Names {
-	return &names{w.Get("Names")}
+	return wrapNames(w.Get("Names"))
 }
 
 func (w *worksheet) Charts() Charts {
 	// Worksheet.ChartObjects is a method (no-arg call returns the whole
 	// collection), not a property.
-	return &charts{w.Call("ChartObjects")}
+	return wrapCharts(w.Call("ChartObjects"))
 }
 
 func (w *worksheet) Shapes() Shapes {
-	return &shapes{w.Get("Shapes")}
+	return wrapShapes(w.Get("Shapes"))
 }
 
 func (w *worksheet) Pictures() Pictures {
 	// The legacy Worksheet.Pictures collection (a method, like
 	// ChartObjects) provides Item/Count; Add goes through Shapes.AddPicture
 	// — both wrapped together, mirroring xlwings.
-	return &pictures{Chain: w.Call("Pictures"), sheet: w.Chain}
+	return wrapPictures(w.Call("Pictures"), w.Chain)
 }
 
 func (w *worksheet) Name() (string, error) {
@@ -114,7 +118,7 @@ func (w *worksheet) Name() (string, error) {
 }
 
 func (w *worksheet) SetName(name string) Worksheet {
-	return &worksheet{w.Put("Name", name)}
+	return wrapWorksheet(w.Put("Name", name))
 }
 
 func (w *worksheet) Index() (int32, error) {
@@ -130,7 +134,7 @@ func (w *worksheet) Visible() (SheetVisibility, error) {
 }
 
 func (w *worksheet) SetVisible(v SheetVisibility) Worksheet {
-	return &worksheet{w.Put("Visible", int32(v))}
+	return wrapWorksheet(w.Put("Visible", int32(v)))
 }
 
 func (w *worksheet) Activate() error {

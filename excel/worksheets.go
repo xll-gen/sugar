@@ -53,8 +53,12 @@ type worksheets struct {
 	sugar.Chain
 }
 
+// wrapWorksheets wraps a chain in the Worksheets typed wrapper. It is the
+// single construction point for the chain -> Worksheets convention.
+func wrapWorksheets(c sugar.Chain) Worksheets { return &worksheets{c} }
+
 func (w *worksheets) Item(index interface{}) Worksheet {
-	return &worksheet{w.Get("Item", index)}
+	return wrapWorksheet(w.Get("Item", index))
 }
 
 func (w *worksheets) Add(opts ...AddOption) Worksheet {
@@ -73,11 +77,10 @@ func (w *worksheets) Add(opts ...AddOption) Worksheet {
 	default:
 		newSheet = w.Call("Add")
 	}
-	ws := &worksheet{newSheet}
 	if o.name != "" {
-		ws.Chain = ws.Put("Name", o.name)
+		newSheet = newSheet.Put("Name", o.name)
 	}
-	return ws
+	return wrapWorksheet(newSheet)
 }
 
 func (w *worksheets) Count() (int32, error) {
@@ -85,5 +88,5 @@ func (w *worksheets) Count() (int32, error) {
 }
 
 func (w *worksheets) Active() Worksheet {
-	return &worksheet{w.Get("Parent").Get("ActiveSheet")}
+	return wrapWorksheet(w.Get("Parent").Get("ActiveSheet"))
 }

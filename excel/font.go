@@ -45,12 +45,16 @@ type font struct {
 	sugar.Chain
 }
 
+// wrapFont wraps a chain in the Font typed wrapper. It is the single
+// construction point for the chain -> Font convention.
+func wrapFont(c sugar.Chain) Font { return &font{c} }
+
 func (f *font) Name() (string, error) {
 	return getString(f, "Name")
 }
 
 func (f *font) SetName(name string) Font {
-	return &font{f.Put("Name", name)}
+	return wrapFont(f.Put("Name", name))
 }
 
 func (f *font) Size() (float64, error) {
@@ -58,7 +62,7 @@ func (f *font) Size() (float64, error) {
 }
 
 func (f *font) SetSize(size float64) Font {
-	return &font{f.Put("Size", size)}
+	return wrapFont(f.Put("Size", size))
 }
 
 func (f *font) Bold() (bool, error) {
@@ -66,7 +70,7 @@ func (f *font) Bold() (bool, error) {
 }
 
 func (f *font) SetBold(on bool) Font {
-	return &font{f.Put("Bold", on)}
+	return wrapFont(f.Put("Bold", on))
 }
 
 func (f *font) Italic() (bool, error) {
@@ -74,7 +78,7 @@ func (f *font) Italic() (bool, error) {
 }
 
 func (f *font) SetItalic(on bool) Font {
-	return &font{f.Put("Italic", on)}
+	return wrapFont(f.Put("Italic", on))
 }
 
 func (f *font) Color() (int32, error) {
@@ -82,5 +86,5 @@ func (f *font) Color() (int32, error) {
 }
 
 func (f *font) SetColor(color int32) Font {
-	return &font{f.Put("Color", color)}
+	return wrapFont(f.Put("Color", color))
 }

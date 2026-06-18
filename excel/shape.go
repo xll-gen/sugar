@@ -47,12 +47,16 @@ type shape struct {
 	sugar.Chain
 }
 
+// wrapShape wraps a chain in the Shape typed wrapper. It is the single
+// construction point for the chain -> Shape convention.
+func wrapShape(c sugar.Chain) Shape { return &shape{c} }
+
 func (s *shape) Name() (string, error) {
 	return getString(s, "Name")
 }
 
 func (s *shape) SetName(name string) Shape {
-	return &shape{s.Put("Name", name)}
+	return wrapShape(s.Put("Name", name))
 }
 
 func (s *shape) Type() (ShapeType, error) {
@@ -70,7 +74,7 @@ func (s *shape) Height() (float64, error) { return getFloat64(s, "Height") }
 
 func (s *shape) SetPosition(left, top, width, height float64) Shape {
 	next := s.Put("Left", left).Put("Top", top).Put("Width", width).Put("Height", height)
-	return &shape{next}
+	return wrapShape(next)
 }
 
 func (s *shape) Delete() error {

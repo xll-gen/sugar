@@ -26,9 +26,13 @@ type shapes struct {
 	sugar.Chain
 }
 
+// wrapShapes wraps a chain in the Shapes typed wrapper. It is the single
+// construction point for the chain -> Shapes convention.
+func wrapShapes(c sugar.Chain) Shapes { return &shapes{c} }
+
 func (s *shapes) Item(index interface{}) Shape {
 	// Shapes.Item is a method in the type library, like Names.Item.
-	return &shape{s.Call("Item", index)}
+	return wrapShape(s.Call("Item", index))
 }
 
 func (s *shapes) Count() (int32, error) {
@@ -37,6 +41,6 @@ func (s *shapes) Count() (int32, error) {
 
 func (s *shapes) ForEachShape(fn func(sh Shape) error) sugar.Chain {
 	return s.ForEach(func(item sugar.Chain) error {
-		return fn(&shape{item})
+		return fn(wrapShape(item))
 	})
 }

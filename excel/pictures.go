@@ -61,6 +61,12 @@ type pictures struct {
 	sheet       sugar.Chain // the parent worksheet
 }
 
+// wrapPictures wraps a chain in the Pictures typed wrapper. Unlike the other
+// wrappers, Pictures carries the parent worksheet (sheet) so its snapshot
+// collection can be re-fetched. It is the single construction point for the
+// chain -> Pictures convention.
+func wrapPictures(c, sheet sugar.Chain) Pictures { return &pictures{Chain: c, sheet: sheet} }
+
 // collection re-fetches the legacy Pictures collection. The COM object
 // returned by Worksheet.Pictures() is a snapshot of the pictures that
 // existed at call time (its Count never grows), so every lookup must go
@@ -76,17 +82,16 @@ func (p *pictures) Add(filename string, opts ...PictureOption) Picture {
 	}
 	shp := p.sheet.Get("Shapes").Call("AddPicture",
 		filename, msoFalse, msoTrue, o.left, o.top, o.width, o.height)
-	pic := &picture{shp}
 	if o.name != "" && shp.Err() == nil {
-		pic.Chain = shp.Put("Name", o.name)
+		shp = shp.Put("Name", o.name)
 	}
-	return pic
+	return wrapPicture(shp)
 }
 
 func (p *pictures) Item(index interface{}) Picture {
 	// Pictures.Item is a method (like Names.Item), not a parameterized
 	// property.
-	return &picture{p.collection().Call("Item", index)}
+	return wrapPicture(p.collection().Call("Item", index))
 }
 
 func (p *pictures) Count() (int32, error) {

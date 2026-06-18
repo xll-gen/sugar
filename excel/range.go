@@ -161,6 +161,10 @@ type excelRange struct {
 	sugar.Chain
 }
 
+// wrapRange wraps a chain in the Range typed wrapper. It is the single
+// construction point for the chain -> Range convention.
+func wrapRange(c sugar.Chain) Range { return &excelRange{c} }
+
 // Value reads `Range.Value`. Single-cell ranges return the underlying scalar
 // (bool, float64, string, time.Time, …). Multi-cell ranges return
 // `[][]interface{}` shaped `[row][col]` — sugar.Chain.Value() handles the
@@ -170,7 +174,7 @@ func (r *excelRange) Value() (interface{}, error) {
 }
 
 func (r *excelRange) SetValue(value interface{}) Range {
-	return &excelRange{r.Put("Value", value)}
+	return wrapRange(r.Put("Value", value))
 }
 
 func (r *excelRange) Address() (string, error) {
@@ -182,7 +186,7 @@ func (r *excelRange) Formula() (string, error) {
 }
 
 func (r *excelRange) SetFormula(formula string) Range {
-	return &excelRange{r.Put("Formula", formula)}
+	return wrapRange(r.Put("Formula", formula))
 }
 
 func (r *excelRange) Formula2() (string, error) {
@@ -190,7 +194,7 @@ func (r *excelRange) Formula2() (string, error) {
 }
 
 func (r *excelRange) SetFormula2(formula string) Range {
-	return &excelRange{r.Put("Formula2", formula)}
+	return wrapRange(r.Put("Formula2", formula))
 }
 
 // SetFormula2Array writes a block of formulas through the Formula2 property in
@@ -199,7 +203,7 @@ func (r *excelRange) SetFormula2(formula string) Range {
 // SetValue block — so the whole column/row of UDF calls lands array-native
 // (no implicit-intersection `=@Fn(...)` rewrite) in a single round-trip.
 func (r *excelRange) SetFormula2Array(formulas interface{}) Range {
-	return &excelRange{r.Put("Formula2", formulas)}
+	return wrapRange(r.Put("Formula2", formulas))
 }
 
 // SetFormulaSpill writes via the Formula2 property (dynamic-array native) and,
@@ -215,9 +219,9 @@ func (r *excelRange) SetFormulaSpill(formula string) Range {
 	if c.Err() != nil {
 		// Formula2 unavailable (pre-DA Excel) or rejected — fall back to the
 		// legacy property so the cell still gets the formula.
-		return &excelRange{r.Put("Formula", formula)}
+		return wrapRange(r.Put("Formula", formula))
 	}
-	return &excelRange{c}
+	return wrapRange(c)
 }
 
 func (r *excelRange) NumberFormat() (string, error) {
@@ -225,27 +229,27 @@ func (r *excelRange) NumberFormat() (string, error) {
 }
 
 func (r *excelRange) SetNumberFormat(fmt string) Range {
-	return &excelRange{r.Put("NumberFormat", fmt)}
+	return wrapRange(r.Put("NumberFormat", fmt))
 }
 
 func (r *excelRange) Cells(row, col interface{}) Range {
-	return &excelRange{r.Get("Cells", row, col)}
+	return wrapRange(r.Get("Cells", row, col))
 }
 
 func (r *excelRange) Offset(rowOffset, colOffset int) Range {
-	return &excelRange{r.Get("Offset", int32(rowOffset), int32(colOffset))}
+	return wrapRange(r.Get("Offset", int32(rowOffset), int32(colOffset)))
 }
 
 func (r *excelRange) Resize(rows, cols int) Range {
-	return &excelRange{r.Get("Resize", int32(rows), int32(cols))}
+	return wrapRange(r.Get("Resize", int32(rows), int32(cols)))
 }
 
 func (r *excelRange) Rows() Range {
-	return &excelRange{r.Get("Rows")}
+	return wrapRange(r.Get("Rows"))
 }
 
 func (r *excelRange) Columns() Range {
-	return &excelRange{r.Get("Columns")}
+	return wrapRange(r.Get("Columns"))
 }
 
 func (r *excelRange) End(direction string) Range {
@@ -260,10 +264,10 @@ func (r *excelRange) End(direction string) Range {
 	case "right":
 		dir = xlToRight
 	default:
-		return &excelRange{sugar.Error(fmt.Errorf(
-			"End: unsupported direction %q (use \"up\", \"down\", \"left\", or \"right\")", direction))}
+		return wrapRange(sugar.Error(fmt.Errorf(
+			"End: unsupported direction %q (use \"up\", \"down\", \"left\", or \"right\")", direction)))
 	}
-	return &excelRange{r.Get("End", dir)}
+	return wrapRange(r.Get("End", dir))
 }
 
 func (r *excelRange) Width() (float64, error)  { return getFloat64(r, "Width") }
@@ -274,7 +278,7 @@ func (r *excelRange) ColumnWidth() (float64, error) {
 }
 
 func (r *excelRange) SetColumnWidth(w float64) Range {
-	return &excelRange{r.Put("ColumnWidth", w)}
+	return wrapRange(r.Put("ColumnWidth", w))
 }
 
 func (r *excelRange) RowHeight() (float64, error) {
@@ -282,7 +286,7 @@ func (r *excelRange) RowHeight() (float64, error) {
 }
 
 func (r *excelRange) SetRowHeight(h float64) Range {
-	return &excelRange{r.Put("RowHeight", h)}
+	return wrapRange(r.Put("RowHeight", h))
 }
 
 func (r *excelRange) Color() (int32, error) {
@@ -292,7 +296,7 @@ func (r *excelRange) Color() (int32, error) {
 func (r *excelRange) SetColor(color int32) Range {
 	inner := r.Get("Interior").Put("Color", color)
 	if inner.Err() != nil {
-		return &excelRange{inner}
+		return wrapRange(inner)
 	}
 	return r
 }
@@ -319,7 +323,7 @@ func (r *excelRange) Find(what string) (Range, bool, error) {
 		// Excel's Find returns Nothing when there is no match.
 		return nil, false, nil
 	}
-	return &excelRange{ch}, true, nil
+	return wrapRange(ch), true, nil
 }
 
 func (r *excelRange) Row() (int32, error) {
@@ -334,12 +338,12 @@ func (r *excelRange) Count() (int32, error) {
 	return getInt32(r, "Count")
 }
 
-func (r *excelRange) Clear() error          { return r.Call("Clear").Err() }
-func (r *excelRange) ClearContents() error  { return r.Call("ClearContents").Err() }
-func (r *excelRange) Delete() error         { return r.Call("Delete").Err() }
-func (r *excelRange) Copy() error           { return r.Call("Copy").Err() }
-func (r *excelRange) Merge() error          { return r.Call("Merge").Err() }
-func (r *excelRange) Unmerge() error        { return r.Call("UnMerge").Err() }
+func (r *excelRange) Clear() error         { return r.Call("Clear").Err() }
+func (r *excelRange) ClearContents() error { return r.Call("ClearContents").Err() }
+func (r *excelRange) Delete() error        { return r.Call("Delete").Err() }
+func (r *excelRange) Copy() error          { return r.Call("Copy").Err() }
+func (r *excelRange) Merge() error         { return r.Call("Merge").Err() }
+func (r *excelRange) Unmerge() error       { return r.Call("UnMerge").Err() }
 
 func (r *excelRange) MergeCells() (bool, error) {
 	return getBool(r, "MergeCells")
@@ -357,5 +361,5 @@ func (r *excelRange) AutoFit() error {
 }
 
 func (r *excelRange) Font() Font {
-	return &font{r.Get("Font")}
+	return wrapFont(r.Get("Font"))
 }

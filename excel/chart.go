@@ -12,14 +12,14 @@ import (
 type ChartType int32
 
 const (
-	ChartArea             ChartType = 1     // xlArea
-	ChartLine             ChartType = 4     // xlLine
-	ChartPie              ChartType = 5     // xlPie
-	ChartColumnClustered  ChartType = 51    // xlColumnClustered
-	ChartColumnStacked    ChartType = 52    // xlColumnStacked
-	ChartBarClustered     ChartType = 57    // xlBarClustered
-	ChartXYScatter        ChartType = -4169 // xlXYScatter
-	ChartXYScatterLines   ChartType = 74    // xlXYScatterLines
+	ChartArea            ChartType = 1     // xlArea
+	ChartLine            ChartType = 4     // xlLine
+	ChartPie             ChartType = 5     // xlPie
+	ChartColumnClustered ChartType = 51    // xlColumnClustered
+	ChartColumnStacked   ChartType = 52    // xlColumnStacked
+	ChartBarClustered    ChartType = 57    // xlBarClustered
+	ChartXYScatter       ChartType = -4169 // xlXYScatter
+	ChartXYScatterLines  ChartType = 74    // xlXYScatterLines
 )
 
 // xlTypePDF is the XlFixedFormatType value for PDF export.
@@ -66,6 +66,10 @@ type chart struct {
 	sugar.Chain // the ChartObject dispatch
 }
 
+// wrapChart wraps a chain (a ChartObject dispatch) in the Chart typed wrapper.
+// It is the single construction point for the chain -> Chart convention.
+func wrapChart(c sugar.Chain) Chart { return &chart{c} }
+
 // inner returns the ChartObject's inner Chart dispatch.
 func (c *chart) inner() sugar.Chain {
 	return c.Get("Chart")
@@ -76,7 +80,7 @@ func (c *chart) Name() (string, error) {
 }
 
 func (c *chart) SetName(name string) Chart {
-	return &chart{c.Put("Name", name)}
+	return wrapChart(c.Put("Name", name))
 }
 
 func (c *chart) ChartType() (ChartType, error) {
@@ -92,7 +96,7 @@ func (c *chart) SetChartType(t ChartType) Chart {
 	if inner.Err() != nil {
 		// Put returns an error-only chain on failure; surfacing it keeps
 		// the fluent contract (callers check .Err() at the end).
-		return &chart{inner}
+		return wrapChart(inner)
 	}
 	return c
 }
@@ -108,7 +112,7 @@ func (c *chart) Height() (float64, error) { return getFloat64(c, "Height") }
 
 func (c *chart) SetPosition(left, top, width, height float64) Chart {
 	next := c.Put("Left", left).Put("Top", top).Put("Width", width).Put("Height", height)
-	return &chart{next}
+	return wrapChart(next)
 }
 
 func (c *chart) ToPNG(path string) error {

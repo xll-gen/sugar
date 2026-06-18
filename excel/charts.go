@@ -29,6 +29,10 @@ type charts struct {
 	sugar.Chain
 }
 
+// wrapCharts wraps a chain in the Charts typed wrapper. It is the single
+// construction point for the chain -> Charts convention.
+func wrapCharts(c sugar.Chain) Charts { return &charts{c} }
+
 // ChartOption configures Charts.Add. Build with ChartAt and ChartSize, mirroring
 // the functional-option style of Pictures.Add / Worksheets.Add / Books.Open.
 type ChartOption func(*chartOptions)
@@ -62,13 +66,13 @@ func (c *charts) Add(opts ...ChartOption) Chart {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &chart{c.Call("Add", o.left, o.top, o.width, o.height)}
+	return wrapChart(c.Call("Add", o.left, o.top, o.width, o.height))
 }
 
 func (c *charts) Item(index interface{}) Chart {
 	// ChartObjects.Item is a method (like Names.Item), not a parameterized
 	// property — DISPATCH_METHOD required.
-	return &chart{c.Call("Item", index)}
+	return wrapChart(c.Call("Item", index))
 }
 
 func (c *charts) Count() (int32, error) {

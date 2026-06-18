@@ -34,12 +34,16 @@ type name struct {
 	sugar.Chain
 }
 
+// wrapName wraps a chain in the Name typed wrapper. It is the single
+// construction point for the chain -> Name convention.
+func wrapName(c sugar.Chain) Name { return &name{c} }
+
 func (n *name) Name() (string, error) {
 	return getString(n, "Name")
 }
 
 func (n *name) SetName(s string) Name {
-	return &name{n.Put("Name", s)}
+	return wrapName(n.Put("Name", s))
 }
 
 func (n *name) RefersTo() (string, error) {
@@ -47,11 +51,11 @@ func (n *name) RefersTo() (string, error) {
 }
 
 func (n *name) SetRefersTo(refersTo string) Name {
-	return &name{n.Put("RefersTo", refersTo)}
+	return wrapName(n.Put("RefersTo", refersTo))
 }
 
 func (n *name) RefersToRange() Range {
-	return &excelRange{n.Get("RefersToRange")}
+	return wrapRange(n.Get("RefersToRange"))
 }
 
 func (n *name) Delete() error {

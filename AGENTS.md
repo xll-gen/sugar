@@ -209,6 +209,10 @@ Resolved in v0.9.2 (2026-06-18, getter refactor / R34):
 
 * ~~~84 scalar property getters each hand-rolled the `c.Get(prop).Value()` + coerce pattern, and several bool getters bypassed `toBool` with a bare `v.(bool)` assert — silently returning `false` for legacy 0/-1 VARIANT shapes.~~ — `excel/helpers.go` now exposes generic `getInt32`/`getFloat64`/`getBool`/`getString(c sugar.Chain, prop string, params ...interface{})` and every scalar getter delegates to them in one line. The bool getters (`Font.Bold`/`Font.Italic`, `Range.MergeCells`, `Workbook.Saved`) now route through `getBool`/`toBool`, fixing the 0/-1 coercion. The local `shape.shapeFloat` and `chart.getFloat` helpers were removed in favor of `getFloat64`. Output-neutral for every non-bool getter; no public signatures changed.
 
+Resolved in v0.9.3 (2026-06-18, wrap-constructor refactor / R35):
+
+* ~~~77 hand-written `&T{...}` wrapper-construction literals were open-coded across `excel/*.go` setters and child-object accessors, so the "chain -> typed wrapper" convention was duplicated at every site.~~ — Each wrapper type now owns a one-line `wrapT(c sugar.Chain) T` constructor returning the interface type (`wrapRange`, `wrapWorksheet`, `wrapChart`, ...); `pictures` keeps its parent-sheet field via `wrapPictures(c, sheet sugar.Chain)`. All 77 literal sites route through the matching `wrapT(...)`. The two sites that mutated a concrete `*T` after construction (`Worksheets.Add`, `Pictures.Add` set `Name` post-build) were restructured to finalize the chain before wrapping once. Behavior-neutral; no public signatures changed.
+
 Still open:
 
 * Integration tests boot a fresh Excel per test (~2–3 s each, full tagged suite ≈183 s). A shared instance must respect COM apartment rules: tests run on arbitrary goroutines, so sharing raw IDispatch is unsafe — the workable design is one Excel process + per-test `GetActive` attach (ROT marshaling). Worth doing once suite time hurts.

@@ -34,8 +34,12 @@ type workbooks struct {
 	sugar.Chain
 }
 
+// wrapWorkbooks wraps a chain in the Workbooks typed wrapper. It is the single
+// construction point for the chain -> Workbooks convention.
+func wrapWorkbooks(c sugar.Chain) Workbooks { return &workbooks{c} }
+
 func (w *workbooks) Add() Workbook {
-	return &workbook{w.Call("Add")}
+	return wrapWorkbook(w.Call("Add"))
 }
 
 // OpenOption configures Workbooks.Open. Build with OpenReadOnly,
@@ -93,11 +97,11 @@ func (w *workbooks) Open(path string, opts ...OpenOption) Workbook {
 	}
 	// Trim trailing Missing() placeholders.
 	args = trimTrailingMissing(args)
-	return &workbook{w.Call("Open", args...)}
+	return wrapWorkbook(w.Call("Open", args...))
 }
 
 func (w *workbooks) Item(index interface{}) Workbook {
-	return &workbook{w.Get("Item", index)}
+	return wrapWorkbook(w.Get("Item", index))
 }
 
 func (w *workbooks) Count() (int32, error) {
@@ -107,5 +111,5 @@ func (w *workbooks) Count() (int32, error) {
 func (w *workbooks) Active() Workbook {
 	// Workbooks has no direct `Active` property; use the parent Application's
 	// ActiveWorkbook. xlwings' `books.active` resolves the same way.
-	return &workbook{w.Get("Parent").Get("ActiveWorkbook")}
+	return wrapWorkbook(w.Get("Parent").Get("ActiveWorkbook"))
 }

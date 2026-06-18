@@ -260,7 +260,7 @@ func applyExpand(anchor Range, direction string) (Range, error) {
 		}
 		parent := anchor.Get("Worksheet")
 		joined := parent.Get("Range", toString(startAddr), toString(endAddr))
-		return &excelRange{joined}, nil
+		return wrapRange(joined), nil
 	default:
 		return nil, fmt.Errorf("Expand: unsupported direction %q (use \"table\", \"down\", or \"right\")", direction)
 	}
@@ -281,7 +281,7 @@ func expandFromEnd(anchor Range, direction int32) (Range, error) {
 	}
 	parent := anchor.Get("Worksheet")
 	joined := parent.Get("Range", toString(startAddr), toString(endAddr))
-	return &excelRange{joined}, nil
+	return wrapRange(joined), nil
 }
 
 // Err exposes any deferred construction error (e.g. invalid Expand direction).
