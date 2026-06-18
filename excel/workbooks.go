@@ -77,27 +77,22 @@ func (w *workbooks) Open(path string, opts ...OpenOption) Workbook {
 	}
 	// Workbooks.Open's COM signature is positional:
 	//   Open(FileName, UpdateLinks, ReadOnly, Format, Password, ...)
-	// sugar.Missing() skips the optionals we don't set; trailing missing
-	// arguments are trimmed so the simple Open(path) stays a 1-arg call.
-	args := []interface{}{
-		path,
-		sugar.Missing(), // UpdateLinks
-		sugar.Missing(), // ReadOnly
-		sugar.Missing(), // Format (text-file column delimiter; not exposed)
-		sugar.Missing(), // Password
-	}
+	// callOptional seeds unset optionals with Missing() and trims the trailing
+	// ones so the simple Open(path) stays a 1-arg call.
+	updateLinks := interface{}(sugar.Missing())
 	if o.updateLinks != nil {
-		args[1] = *o.updateLinks
+		updateLinks = *o.updateLinks
 	}
+	readOnly := interface{}(sugar.Missing())
 	if o.readOnly {
-		args[2] = true
+		readOnly = true
 	}
+	format := interface{}(sugar.Missing()) // text-file column delimiter; not exposed
+	password := interface{}(sugar.Missing())
 	if o.password != "" {
-		args[4] = o.password
+		password = o.password
 	}
-	// Trim trailing Missing() placeholders.
-	args = trimTrailingMissing(args)
-	return wrapWorkbook(w.Call("Open", args...))
+	return wrapWorkbook(callOptional(w, "Open", []interface{}{path}, updateLinks, readOnly, format, password))
 }
 
 func (w *workbooks) Item(index interface{}) Workbook {

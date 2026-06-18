@@ -3,7 +3,6 @@
 package excel
 
 import (
-	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
 )
 
@@ -159,21 +158,17 @@ func (w *workbook) SaveAs(path string, opts ...SaveAsOption) error {
 	}
 	// Workbook.SaveAs's COM signature is positional:
 	//   SaveAs(Filename, FileFormat, Password, ...)
-	// sugar.Missing() skips the optionals we don't set; trailing missing
-	// arguments are trimmed so the simple SaveAs(path) stays a 1-arg call.
-	args := []interface{}{
-		path,
-		sugar.Missing(), // FileFormat
-		sugar.Missing(), // Password
-	}
+	// callOptional seeds the unset optionals with Missing() and trims the
+	// trailing ones so the simple SaveAs(path) stays a 1-arg call.
+	fileFormat := interface{}(sugar.Missing())
 	if o.fileFormat != nil {
-		args[1] = int32(*o.fileFormat)
+		fileFormat = int32(*o.fileFormat)
 	}
+	password := interface{}(sugar.Missing())
 	if o.password != "" {
-		args[2] = o.password
+		password = o.password
 	}
-	args = trimTrailingMissing(args)
-	return w.Call("SaveAs", args...).Err()
+	return callOptional(w, "SaveAs", []interface{}{path}, fileFormat, password).Err()
 }
 
 // CloseOption configures Workbook.Close. Build with CloseSaveChanges.
@@ -196,23 +191,11 @@ func (w *workbook) Close(opts ...CloseOption) error {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if o.saveChanges == nil {
-		return w.Call("Close").Err()
+	// Workbook.Close(SaveChanges, Filename, RouteWorkbook). When SaveChanges is
+	// unset, callOptional trims it away so this stays a 0-arg Close().
+	saveChanges := interface{}(sugar.Missing())
+	if o.saveChanges != nil {
+		saveChanges = *o.saveChanges
 	}
-	// Workbook.Close(SaveChanges, Filename, RouteWorkbook).
-	return w.Call("Close", *o.saveChanges).Err()
-}
-
-// trimTrailingMissing drops trailing sugar.Missing() placeholders from a
-// positional COM argument list so that simple calls collapse to their shortest
-// form. Mirrors the inline logic in Workbooks.Open.
-func trimTrailingMissing(args []interface{}) []interface{} {
-	last := len(args) - 1
-	for last > 0 {
-		if _, isMissing := args[last].(*ole.VARIANT); !isMissing {
-			break
-		}
-		last--
-	}
-	return args[:last+1]
+	return callOptional(w, "Close", nil, saveChanges).Err()
 }

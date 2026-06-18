@@ -5,8 +5,37 @@ package excel
 import (
 	"fmt"
 
+	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
 )
+
+// callOptional issues a positional COM call where `leading` holds the required
+// arguments and `optional` holds the trailing optional arguments in COM
+// signature order. Every optional that should be omitted must be sugar.Missing();
+// trailing Missing() placeholders are then dropped so a call supplying no
+// optionals collapses to just the leading args (e.g. SaveAs(path) stays a 1-arg
+// call, Close() stays a 0-arg call). This centralizes the Missing-seed +
+// trailing-trim pattern that every positional COM method with optional
+// parameters (SaveAs, Workbooks.Open, Workbook.Close, future PasteSpecial/Run/
+// Copy/...) otherwise re-implements.
+func callOptional(c sugar.Chain, method string, leading []interface{}, optional ...interface{}) sugar.Chain {
+	args := append(append([]interface{}{}, leading...), optional...)
+	return c.Call(method, trimTrailingMissing(args)...)
+}
+
+// trimTrailingMissing drops trailing sugar.Missing() placeholders from a
+// positional COM argument list so that simple calls collapse to their shortest
+// form (down to and including the empty list when every argument is omitted).
+func trimTrailingMissing(args []interface{}) []interface{} {
+	last := len(args) - 1
+	for last >= 0 {
+		if _, isMissing := args[last].(*ole.VARIANT); !isMissing {
+			break
+		}
+		last--
+	}
+	return args[:last+1]
+}
 
 // getInt32 reads an int32-family scalar COM property off a chain and coerces it
 // through toInt32. It is the generic form of the repeated
