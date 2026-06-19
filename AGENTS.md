@@ -213,6 +213,10 @@ Resolved in v0.9.3 (2026-06-18, wrap-constructor refactor / R35):
 
 * ~~~77 hand-written `&T{...}` wrapper-construction literals were open-coded across `excel/*.go` setters and child-object accessors, so the "chain -> typed wrapper" convention was duplicated at every site.~~ — Each wrapper type now owns a one-line `wrapT(c sugar.Chain) T` constructor returning the interface type (`wrapRange`, `wrapWorksheet`, `wrapChart`, ...); `pictures` keeps its parent-sheet field via `wrapPictures(c, sheet sugar.Chain)`. All 77 literal sites route through the matching `wrapT(...)`. The two sites that mutated a concrete `*T` after construction (`Worksheets.Add`, `Pictures.Add` set `Name` post-build) were restructured to finalize the chain before wrapping once. Behavior-neutral; no public signatures changed.
 
+Resolved in v0.9.4 (2026-06-19, optional-arg refactor / R37):
+
+* ~~The "concat required + optional args, trim trailing `Missing`, then `Call`" idiom for positional-optional COM methods was hand-rolled at each site (`SaveAs`, `Workbooks.Open`, `Close`), so trailing-Missing handling lived in three places.~~ — `excel/helpers.go` now exposes `callOptional(c sugar.Chain, method string, leading []interface{}, optional ...interface{}) sugar.Chain` (required+optional concat → `trimTrailingMissing` → `Call`); `trimTrailingMissing` moved from `workbook.go` to `helpers.go` with its guard generalized (`last>=0`) so an all-`Missing` call trims to an empty arg list (supports no-required methods like `Close`). **New positional-optional COM wrappers (PasteSpecial/Run/Copy parity work) should call `callOptional` rather than re-rolling the trim.** Behavior-neutral; `go-ole` import dropped from `workbook.go`.
+
 Still open:
 
 * Integration tests boot a fresh Excel per test (~2–3 s each, full tagged suite ≈183 s). A shared instance must respect COM apartment rules: tests run on arbitrary goroutines, so sharing raw IDispatch is unsafe — the workable design is one Excel process + per-test `GetActive` attach (ROT marshaling). Worth doing once suite time hurts.
