@@ -26,27 +26,27 @@ type Names interface {
 }
 
 type names struct {
-	sugar.Chain
+	collection[Name]
 }
 
 // wrapNames wraps a chain in the Names typed wrapper. It is the single
 // construction point for the chain -> Names convention.
-func wrapNames(c sugar.Chain) Names { return &names{c} }
+func wrapNames(c sugar.Chain) Names { return &names{newCollection(c, wrapName)} }
 
 func (n *names) Add(nameStr string, refersTo interface{}) Name {
 	// Range values pass through as-is: sugar.Chain arguments are normalized
 	// to raw IDispatch by the core Call.
-	return wrapName(n.Call("Add", nameStr, refersTo))
+	return n.add(n.Call("Add", nameStr, refersTo))
 }
 
 func (n *names) Item(index interface{}) Name {
 	// Names.Item is a method in Excel's type library (unlike Sheets.Item,
 	// which is a parameterized property), so DISPATCH_METHOD is required.
-	return wrapName(n.Call("Item", index))
+	return n.itemByCall(index)
 }
 
 func (n *names) Count() (int32, error) {
-	return getInt32(n, "Count")
+	return n.count()
 }
 
 func (n *names) Contains(nameStr string) (bool, error) {

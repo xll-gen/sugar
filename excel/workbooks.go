@@ -31,15 +31,15 @@ type Workbooks interface {
 }
 
 type workbooks struct {
-	sugar.Chain
+	collection[Workbook]
 }
 
 // wrapWorkbooks wraps a chain in the Workbooks typed wrapper. It is the single
 // construction point for the chain -> Workbooks convention.
-func wrapWorkbooks(c sugar.Chain) Workbooks { return &workbooks{c} }
+func wrapWorkbooks(c sugar.Chain) Workbooks { return &workbooks{newCollection(c, wrapWorkbook)} }
 
 func (w *workbooks) Add() Workbook {
-	return wrapWorkbook(w.Call("Add"))
+	return w.add(w.Call("Add"))
 }
 
 // OpenOption configures Workbooks.Open. Build with OpenReadOnly,
@@ -92,15 +92,16 @@ func (w *workbooks) Open(path string, opts ...OpenOption) Workbook {
 	if o.password != "" {
 		password = o.password
 	}
-	return wrapWorkbook(callOptional(w, "Open", []interface{}{path}, updateLinks, readOnly, format, password))
+	return w.add(callOptional(w, "Open", []interface{}{path}, updateLinks, readOnly, format, password))
 }
 
 func (w *workbooks) Item(index interface{}) Workbook {
-	return wrapWorkbook(w.Get("Item", index))
+	// Workbooks.Item is a parameterized property — DISPATCH_PROPERTYGET.
+	return w.itemByGet(index)
 }
 
 func (w *workbooks) Count() (int32, error) {
-	return getInt32(w, "Count")
+	return w.count()
 }
 
 func (w *workbooks) Active() Workbook {

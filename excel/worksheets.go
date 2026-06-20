@@ -50,15 +50,16 @@ func AddName(name string) AddOption {
 }
 
 type worksheets struct {
-	sugar.Chain
+	collection[Worksheet]
 }
 
 // wrapWorksheets wraps a chain in the Worksheets typed wrapper. It is the
 // single construction point for the chain -> Worksheets convention.
-func wrapWorksheets(c sugar.Chain) Worksheets { return &worksheets{c} }
+func wrapWorksheets(c sugar.Chain) Worksheets { return &worksheets{newCollection(c, wrapWorksheet)} }
 
 func (w *worksheets) Item(index interface{}) Worksheet {
-	return wrapWorksheet(w.Get("Item", index))
+	// Worksheets.Item is a parameterized property — DISPATCH_PROPERTYGET.
+	return w.itemByGet(index)
 }
 
 func (w *worksheets) Add(opts ...AddOption) Worksheet {
@@ -80,11 +81,11 @@ func (w *worksheets) Add(opts ...AddOption) Worksheet {
 	if o.name != "" {
 		newSheet = newSheet.Put("Name", o.name)
 	}
-	return wrapWorksheet(newSheet)
+	return w.add(newSheet)
 }
 
 func (w *worksheets) Count() (int32, error) {
-	return getInt32(w, "Count")
+	return w.count()
 }
 
 func (w *worksheets) Active() Worksheet {

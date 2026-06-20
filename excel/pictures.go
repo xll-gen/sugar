@@ -57,21 +57,28 @@ func PictureName(name string) PictureOption {
 }
 
 type pictures struct {
-	sugar.Chain             // a Worksheet.Pictures snapshot (Err/ForEach anchor)
-	sheet       sugar.Chain // the parent worksheet
+	collection[Picture]             // embedded chain = Worksheet.Pictures snapshot (Err/ForEach anchor)
+	sheet               sugar.Chain // the parent worksheet
 }
 
 // wrapPictures wraps a chain in the Pictures typed wrapper. Unlike the other
 // wrappers, Pictures carries the parent worksheet (sheet) so its snapshot
 // collection can be re-fetched. It is the single construction point for the
 // chain -> Pictures convention.
-func wrapPictures(c, sheet sugar.Chain) Pictures { return &pictures{Chain: c, sheet: sheet} }
+//
+// The shared base's source resolver re-fetches the legacy Pictures collection
+// on every Item/Count lookup. The COM object returned by Worksheet.Pictures()
+// is a snapshot of the pictures that existed at call time (its Count never
+// grows), so every lookup must go through a fresh call — exactly what xlwings'
+// `api` property does.
+func wrapPictures(c, sheet sugar.Chain) Pictures {
+	p := &pictures{sheet: sheet}
+	p.collection = newCollectionFrom(c, p.snapshot, wrapPicture)
+	return p
+}
 
-// collection re-fetches the legacy Pictures collection. The COM object
-// returned by Worksheet.Pictures() is a snapshot of the pictures that
-// existed at call time (its Count never grows), so every lookup must go
-// through a fresh call — exactly what xlwings' `api` property does.
-func (p *pictures) collection() sugar.Chain {
+// snapshot re-fetches the legacy Pictures collection from the parent sheet.
+func (p *pictures) snapshot() sugar.Chain {
 	return p.sheet.Call("Pictures")
 }
 
@@ -85,15 +92,15 @@ func (p *pictures) Add(filename string, opts ...PictureOption) Picture {
 	if o.name != "" && shp.Err() == nil {
 		shp = shp.Put("Name", o.name)
 	}
-	return wrapPicture(shp)
+	return p.add(shp)
 }
 
 func (p *pictures) Item(index interface{}) Picture {
 	// Pictures.Item is a method (like Names.Item), not a parameterized
-	// property.
-	return wrapPicture(p.collection().Call("Item", index))
+	// property. The base's source resolver re-fetches the snapshot collection.
+	return p.itemByCall(index)
 }
 
 func (p *pictures) Count() (int32, error) {
-	return getInt32(p.collection(), "Count")
+	return p.count()
 }

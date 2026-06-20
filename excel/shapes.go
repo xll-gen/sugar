@@ -23,20 +23,20 @@ type Shapes interface {
 }
 
 type shapes struct {
-	sugar.Chain
+	collection[Shape]
 }
 
 // wrapShapes wraps a chain in the Shapes typed wrapper. It is the single
 // construction point for the chain -> Shapes convention.
-func wrapShapes(c sugar.Chain) Shapes { return &shapes{c} }
+func wrapShapes(c sugar.Chain) Shapes { return &shapes{newCollection(c, wrapShape)} }
 
 func (s *shapes) Item(index interface{}) Shape {
 	// Shapes.Item is a method in the type library, like Names.Item.
-	return wrapShape(s.Call("Item", index))
+	return s.itemByCall(index)
 }
 
 func (s *shapes) Count() (int32, error) {
-	return getInt32(s, "Count")
+	return s.count()
 }
 
 func (s *shapes) ForEachShape(fn func(sh Shape) error) sugar.Chain {
