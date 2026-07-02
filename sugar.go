@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -201,6 +202,13 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 //     []string are exempt: go-ole marshals those natively as VT_UI1 /
 //     VT_BSTR arrays and changing that would alter behavior for non-Excel
 //     COM servers.
+//   - time.Time / *time.Time → *ole.VARIANT carrying a VT_DATE built by
+//     scalarToVariant (cleared by cleanup). go-ole would otherwise marshal a
+//     scalar time.Time as a locale-dependent VT_BSTR string (and a *time.Time
+//     as a BYREF BSTR pointing at a Go string), so a single-cell `SetValue(t)`
+//     would disagree with the VT_DATE a `[][]any{{t}}` block write produces.
+//     Routing scalars through scalarToVariant keeps both paths on identical
+//     wall-clock VT_DATE semantics.
 //
 // The returned cleanup func must run after the COM call completes; it is
 // always non-nil.
@@ -222,6 +230,26 @@ func normalizeParams(params []interface{}) ([]interface{}, func(), error) {
 			}
 			cleanups = append(cleanups, func() { disp.Release() })
 			out[i] = disp
+		case time.Time:
+			cell := new(ole.VARIANT)
+			if err := scalarToVariant(v, cell); err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("sugar: time argument %d: %w", i, err)
+			}
+			cleanups = append(cleanups, func() { cell.Clear() })
+			out[i] = cell
+		case *time.Time:
+			if v == nil {
+				out[i] = nil
+				continue
+			}
+			cell := new(ole.VARIANT)
+			if err := scalarToVariant(*v, cell); err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("sugar: time argument %d: %w", i, err)
+			}
+			cleanups = append(cleanups, func() { cell.Clear() })
+			out[i] = cell
 		default:
 			if !needsArrayEncoding(p) {
 				out[i] = p

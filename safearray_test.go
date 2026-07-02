@@ -228,6 +228,59 @@ func TestDecodeVariantArray_ByrefRejected(t *testing.T) {
 	}
 }
 
+// TestNormalizeParams_TimeScalar is the Excel-free unit cover for defect 3:
+// a scalar time.Time argument must be normalized to a VT_DATE VARIANT (the
+// same wall-clock encoding a [][]any block uses) rather than handed to go-ole,
+// which would marshal it as a locale-dependent VT_BSTR string.
+func TestNormalizeParams_TimeScalar(t *testing.T) {
+	ts := time.Date(2026, 7, 2, 9, 30, 0, 0, time.UTC)
+	out, cleanup, err := normalizeParams([]interface{}{ts})
+	if err != nil {
+		t.Fatalf("normalizeParams: %v", err)
+	}
+	defer cleanup()
+	if len(out) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(out))
+	}
+	v, ok := out[0].(*ole.VARIANT)
+	if !ok {
+		t.Fatalf("expected *ole.VARIANT, got %T", out[0])
+	}
+	if v.VT != ole.VT_DATE {
+		t.Errorf("expected VT_DATE, got VT=0x%x", v.VT)
+	}
+	// The serial must match the standalone scalarToVariant encoding.
+	want := dateSerial(t, ts)
+	if got := math.Float64frombits(uint64(v.Val)); got != want {
+		t.Errorf("VT_DATE serial: got %v, want %v", got, want)
+	}
+}
+
+// TestNormalizeParams_TimePointer covers the *time.Time branch (nil stays nil;
+// non-nil encodes VT_DATE).
+func TestNormalizeParams_TimePointer(t *testing.T) {
+	ts := time.Date(2026, 7, 2, 9, 30, 0, 0, time.UTC)
+	out, cleanup, err := normalizeParams([]interface{}{&ts})
+	if err != nil {
+		t.Fatalf("normalizeParams(*time.Time): %v", err)
+	}
+	defer cleanup()
+	v, ok := out[0].(*ole.VARIANT)
+	if !ok || v.VT != ole.VT_DATE {
+		t.Fatalf("expected VT_DATE VARIANT, got %T (VT=%v)", out[0], out[0])
+	}
+
+	var nilPtr *time.Time
+	out2, cleanup2, err := normalizeParams([]interface{}{nilPtr})
+	if err != nil {
+		t.Fatalf("normalizeParams(nil *time.Time): %v", err)
+	}
+	defer cleanup2()
+	if out2[0] != nil {
+		t.Errorf("nil *time.Time should pass through as nil, got %T %v", out2[0], out2[0])
+	}
+}
+
 func TestNeedsArrayEncoding(t *testing.T) {
 	cases := []struct {
 		in   interface{}

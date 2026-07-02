@@ -108,6 +108,50 @@ func TestChain_PutGridValue_Date(t *testing.T) {
 	})
 }
 
+// TestChain_PutScalarDateValue is the defect-3 round trip: a *scalar*
+// time.Time written to a single cell must land as a real VT_DATE (not a
+// locale-dependent VT_BSTR string), matching the VT_DATE a [][]any block write
+// produces. Before the fix, go-ole marshaled the scalar time.Time to a
+// "2006-01-02 15:04:05" string, so this read-back would be a string, not a
+// time.Time.
+func TestChain_PutScalarDateValue(t *testing.T) {
+	sugar.Do(func(ctx sugar.Context) error {
+		excel := setupExcel(t, ctx)
+		if excel == nil {
+			return nil
+		}
+		defer excel.Put("DisplayAlerts", false).Call("Quit")
+
+		sheet := excel.Get("Workbooks").Call("Add").Get("ActiveSheet")
+		loc, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Skipf("America/New_York unavailable: %v", err)
+		}
+		want := time.Date(2026, 7, 2, 9, 30, 0, 0, loc)
+
+		// Scalar Put — no slice wrapper, so this exercises the new
+		// normalizeParams time.Time branch, not the SAFEARRAY block path.
+		if err := sheet.Get("Range", "A1").Put("Value", want).Err(); err != nil {
+			t.Fatalf("Put scalar date: %v", err)
+		}
+
+		got, err := sheet.Get("Range", "A1").Get("Value").Value()
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		ts, ok := got.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time (VT_DATE), got %T %v", got, got)
+		}
+		if ts.Year() != want.Year() || ts.Month() != want.Month() ||
+			ts.Day() != want.Day() || ts.Hour() != want.Hour() ||
+			ts.Minute() != want.Minute() {
+			t.Errorf("scalar date mismatch: want %v, got %v", want, ts)
+		}
+		return nil
+	})
+}
+
 // TestChain_PutVectorValue writes a 1-D []interface{} — Excel reads it as a
 // row vector.
 func TestChain_PutVectorValue(t *testing.T) {
