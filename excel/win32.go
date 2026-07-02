@@ -68,25 +68,65 @@ func classNameOf(hwnd uintptr) string {
 	return syscall.UTF16ToString(buf[:n])
 }
 
+// Enumeration callbacks MUST be created exactly once, at package scope.
+// syscall.NewCallback allocates a C-callable thunk that the Go runtime NEVER
+// frees, and each process has a hard cap (runtime maxCallback = 2000). Creating
+// a fresh closure per call — as an earlier version did to capture (pid, found)
+// — leaked one slot per GetApplicationByPID, so a long-lived Go server (every
+// ribbon command runs the attach path) would hit an unrecoverable
+// "too many callback functions" runtime throw after ~2000 commands and take
+// the whole process down.
+//
+// To keep a single reusable callback while still carrying per-call search
+// state, the state travels through the enumeration's lParam as a pointer to a
+// stack-local struct. EnumWindows / EnumChildWindows only dereference lParam
+// for the duration of the call (they never retain it past the final callback
+// invocation), so passing the address of a local is safe and the calls remain
+// reentrant / goroutine-safe. The lParam parameter is typed as unsafe.Pointer
+// (pointer-sized, so NewCallback accepts it) so the callback body dereferences
+// it without a vet-flagged uintptr->unsafe.Pointer conversion.
+
+// xlMainSearch is the per-call state for findXlMainForPID, threaded through the
+// EnumWindows lParam.
+type xlMainSearch struct {
+	pid   uint32
+	found uintptr
+}
+
+// enumXlMainProc is the single, reusable EnumWindows callback for
+// findXlMainForPID. See the note above on why it is a package-level var.
+var enumXlMainProc = syscall.NewCallback(func(hwnd uintptr, lparam unsafe.Pointer) uintptr {
+	s := (*xlMainSearch)(lparam)
+	if classNameOf(hwnd) != "XLMAIN" {
+		return 1 // continue
+	}
+	if owner, err := pidFromHwnd(hwnd); err != nil || owner != s.pid {
+		return 1 // continue
+	}
+	s.found = hwnd
+	return 0 // stop
+})
+
+// enumExcel7Proc is the single, reusable EnumChildWindows callback for
+// findExcel7Child (used only on the fallback path).
+var enumExcel7Proc = syscall.NewCallback(func(hwnd uintptr, lparam unsafe.Pointer) uintptr {
+	found := (*uintptr)(lparam)
+	if classNameOf(hwnd) == "EXCEL7" {
+		*found = hwnd
+		return 0 // stop
+	}
+	return 1 // continue
+})
+
 // findXlMainForPID enumerates top-level windows and returns the first XLMAIN
 // frame window owned by the target PID, or 0 if none is found. Unlike the
 // in-process XLL host (which uses EnumThreadWindows on its own STA thread), the
 // server runs in a separate process, so it must scan all top-level windows and
 // match on PID.
 func findXlMainForPID(pid uint32) uintptr {
-	var found uintptr
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		if classNameOf(hwnd) != "XLMAIN" {
-			return 1 // continue
-		}
-		if owner, err := pidFromHwnd(hwnd); err != nil || owner != pid {
-			return 1 // continue
-		}
-		found = hwnd
-		return 0 // stop
-	})
-	procEnumWindows.Call(cb, 0)
-	return found
+	s := xlMainSearch{pid: pid}
+	procEnumWindows.Call(enumXlMainProc, uintptr(unsafe.Pointer(&s)))
+	return s.found
 }
 
 // findExcel7Child locates the EXCEL7 child window under an XLMAIN frame. It
@@ -102,14 +142,7 @@ func findExcel7Child(frame uintptr) uintptr {
 	}
 
 	var found uintptr
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		if classNameOf(hwnd) == "EXCEL7" {
-			found = hwnd
-			return 0 // stop
-		}
-		return 1 // continue
-	})
-	procEnumChildWindows.Call(frame, cb, 0)
+	procEnumChildWindows.Call(frame, enumExcel7Proc, uintptr(unsafe.Pointer(&found)))
 	return found
 }
 
