@@ -312,7 +312,19 @@ func scalarToVariant(val interface{}, out *ole.VARIANT) error {
 	case time.Time:
 		// OLE dates are timezone-naive day counts since 1899-12-30; use the
 		// wall-clock reading of x so what the user sees is what Excel shows.
-		days := x.Sub(time.Date(1899, 12, 30, 0, 0, 0, 0, x.Location())).Hours() / 24.0
+		//
+		// Subtracting two absolute instants (x and the 1899 epoch) would fold
+		// in the difference between x's UTC offset and the epoch's offset in
+		// x.Location(). For zones whose historical offset differs from the
+		// modern one — e.g. IANA Asia/Seoul carries an LMT of +08:27:52 at the
+		// 1899 epoch, and any DST zone shifts by 60 min — that drift pushes a
+		// midnight date back to the previous day (23:xx). Decompose x into its
+		// wall-clock fields and rebuild them in UTC so the elapsed-time
+		// arithmetic is zone-neutral. go-ole's GetVariantDate decodes VT_DATE
+		// back into a naive-UTC time.Time, so this makes the round trip
+		// symmetric to the minute.
+		n := time.Date(x.Year(), x.Month(), x.Day(), x.Hour(), x.Minute(), x.Second(), x.Nanosecond(), time.UTC)
+		days := n.Sub(time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)).Hours() / 24.0
 		*out = ole.NewVariant(ole.VT_DATE, int64(math.Float64bits(days)))
 	default:
 		return fmt.Errorf("scalarToVariant: unsupported cell type %T", val)

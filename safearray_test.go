@@ -7,9 +7,18 @@
 package sugar
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
+
+	// Embed the IANA zone database so LoadLocation works deterministically on
+	// any host (Windows ships no /usr/share/zoneinfo, and CI images vary). The
+	// VT_DATE zone-drift tests below need real zones; this keeps them from
+	// flaking to t.Skip. Test-only import — it does not bloat the library.
+	_ "time/tzdata"
+
+	ole "github.com/go-ole/go-ole"
 )
 
 // roundTrip encodes a Go slice and decodes it back through the same
@@ -87,7 +96,14 @@ func TestEncodeDecode_FormulaGrid(t *testing.T) {
 }
 
 func TestEncodeDecode_Date(t *testing.T) {
-	in := time.Date(2026, 6, 10, 15, 30, 0, 0, time.Local)
+	// Use an explicit DST zone rather than time.Local so the test is
+	// deterministic on any host and actually exercises the zone-drift path
+	// (America/New_York's UTC offset differs between the 1899 epoch and 2026).
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("America/New_York unavailable: %v", err)
+	}
+	in := time.Date(2026, 6, 10, 15, 30, 0, 0, loc)
 	out := roundTrip(t, []interface{}{in})
 	cells, ok := out.([]interface{})
 	if !ok || len(cells) != 1 {
@@ -114,6 +130,67 @@ func TestEncode_UnsupportedCellError(t *testing.T) {
 	_, err := encodeVariantArray([]interface{}{struct{}{}})
 	if err == nil {
 		t.Error("expected error for unsupported cell type")
+	}
+}
+
+// dateSerial encodes t through scalarToVariant and returns the raw OLE VT_DATE
+// serial (day count since 1899-12-30). Excel stores dates as this double.
+func dateSerial(t *testing.T, ts time.Time) float64 {
+	t.Helper()
+	var out ole.VARIANT
+	ole.VariantInit(&out)
+	if err := scalarToVariant(ts, &out); err != nil {
+		t.Fatalf("scalarToVariant(%v): %v", ts, err)
+	}
+	if out.VT != ole.VT_DATE {
+		t.Fatalf("expected VT_DATE, got VT=%d", out.VT)
+	}
+	return math.Float64frombits(uint64(out.Val))
+}
+
+// TestScalarToVariant_DateZoneDrift is the regression test for the VT_DATE
+// wall-clock encoding bug. scalarToVariant must encode a date by its wall-clock
+// fields, zone-independent: midnight on a given day must map to that day's
+// integer Excel serial in every zone, never to x.xx that Excel rounds back to
+// the previous day (23:xx). The pre-fix code subtracted two absolute instants
+// in x.Location(), folding in the offset difference between x's date and the
+// 1899 epoch — 60 min in DST zones, +08:27:52 LMT (≈32 min) for IANA
+// Asia/Seoul — which pushed midnight into the previous day.
+func TestScalarToVariant_DateZoneDrift(t *testing.T) {
+	utcMidnight := dateSerial(t, time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC))
+	if utcMidnight != math.Trunc(utcMidnight) {
+		t.Fatalf("UTC midnight is not an integer serial: %v", utcMidnight)
+	}
+
+	for _, name := range []string{"America/New_York", "Europe/Berlin", "Asia/Seoul"} {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Skipf("zone %s unavailable: %v", name, err)
+		}
+		got := dateSerial(t, time.Date(2026, 6, 10, 0, 0, 0, 0, loc))
+		if got != math.Trunc(got) {
+			t.Errorf("%s: midnight encoded to non-integer serial %v (zone drift)", name, got)
+		}
+		if got != utcMidnight {
+			t.Errorf("%s: serial %v != UTC-midnight serial %v (zone drift)", name, got, utcMidnight)
+		}
+	}
+}
+
+// TestScalarToVariant_DateWallClock checks that a non-midnight wall-clock time
+// survives with its hour/minute intact regardless of zone — the property the
+// 313-314 comment promises ("what the user sees is what Excel shows").
+func TestScalarToVariant_DateWallClock(t *testing.T) {
+	ref := dateSerial(t, time.Date(2026, 6, 10, 15, 30, 0, 0, time.UTC))
+	for _, name := range []string{"America/New_York", "Asia/Seoul"} {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Skipf("zone %s unavailable: %v", name, err)
+		}
+		got := dateSerial(t, time.Date(2026, 6, 10, 15, 30, 0, 0, loc))
+		if math.Abs(got-ref) > 1e-9 {
+			t.Errorf("%s: 15:30 wall-clock serial %v != UTC 15:30 serial %v", name, got, ref)
+		}
 	}
 }
 

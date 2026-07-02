@@ -19,6 +19,9 @@ import (
 	"testing"
 	"time"
 
+	// Deterministic IANA zones for the VT_DATE round-trip test below.
+	_ "time/tzdata"
+
 	"github.com/xll-gen/sugar"
 )
 
@@ -72,9 +75,16 @@ func TestChain_PutGridValue_Date(t *testing.T) {
 		defer excel.Put("DisplayAlerts", false).Call("Quit")
 
 		sheet := excel.Get("Workbooks").Call("Add").Get("ActiveSheet")
-		want := time.Date(2026, 6, 10, 15, 30, 0, 0, time.Local)
+		// Use an explicit DST zone instead of time.Local so the round trip is
+		// zone-independent and actually exercises the VT_DATE wall-clock path
+		// (America/New_York's UTC offset in 2026 differs from the 1899 epoch's).
+		loc, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Skipf("America/New_York unavailable: %v", err)
+		}
+		want := time.Date(2026, 6, 10, 15, 30, 0, 0, loc)
 
-		err := sheet.Get("Range", "A1:A1").
+		err = sheet.Get("Range", "A1:A1").
 			Put("Value", [][]interface{}{{want}}).Err()
 		if err != nil {
 			t.Fatalf("Put date: %v", err)
