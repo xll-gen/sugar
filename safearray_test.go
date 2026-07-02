@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	// Embed the IANA zone database so LoadLocation works deterministically on
 	// any host (Windows ships no /usr/share/zoneinfo, and CI images vary). The
@@ -191,6 +192,39 @@ func TestScalarToVariant_DateWallClock(t *testing.T) {
 		if math.Abs(got-ref) > 1e-9 {
 			t.Errorf("%s: 15:30 wall-clock serial %v != UTC 15:30 serial %v", name, got, ref)
 		}
+	}
+}
+
+// TestDecodeVariantArray_TypedArrayRejected builds a *typed* SAFEARRAY
+// (VT_ARRAY|VT_BSTR — the shape a general COM server can return, not just
+// Excel's VT_VARIANT) and confirms decodeVariantArray rejects it instead of
+// feeding VT_VARIANT-assuming getElement a poisoned buffer (which silently
+// misdecoded and leaked a BSTR per string cell). SafeArray* APIs need no
+// CoInitialize, so this is Excel-free.
+func TestDecodeVariantArray_TypedArrayRejected(t *testing.T) {
+	bounds := []safeArrayBound{{cElements: 2, lLbound: 0}}
+	sa, _, _ := procSafeArrayCreate.Call(
+		uintptr(ole.VT_BSTR),
+		uintptr(uint32(1)),
+		uintptr(unsafe.Pointer(&bounds[0])),
+	)
+	if sa == 0 {
+		t.Fatal("SafeArrayCreate(VT_BSTR) failed")
+	}
+	defer procSafeArrayDestroy.Call(sa)
+
+	v := ole.NewVariant(ole.VT_ARRAY|ole.VT_BSTR, int64(sa))
+	if _, err := decodeVariantArray(&v); err == nil {
+		t.Error("expected error decoding a typed (VT_BSTR) SAFEARRAY, got nil")
+	}
+}
+
+// TestDecodeVariantArray_ByrefRejected confirms a VT_BYREF array VARIANT is
+// rejected before its Val (a SAFEARRAY**, not SAFEARRAY*) is dereferenced.
+func TestDecodeVariantArray_ByrefRejected(t *testing.T) {
+	v := ole.NewVariant(ole.VT_ARRAY|ole.VT_VARIANT|ole.VT_BYREF, 0)
+	if _, err := decodeVariantArray(&v); err == nil {
+		t.Error("expected error decoding a VT_BYREF array, got nil")
 	}
 }
 

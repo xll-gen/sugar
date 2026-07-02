@@ -27,6 +27,7 @@ var (
 	procSafeArrayGetLBound  = oleaut32.NewProc("SafeArrayGetLBound")
 	procSafeArrayGetUBound  = oleaut32.NewProc("SafeArrayGetUBound")
 	procSafeArrayGetElement = oleaut32.NewProc("SafeArrayGetElement")
+	procSafeArrayGetVartype = oleaut32.NewProc("SafeArrayGetVartype")
 	procSafeArrayCreate     = oleaut32.NewProc("SafeArrayCreate")
 	procSafeArrayPutElement = oleaut32.NewProc("SafeArrayPutElement")
 	procSafeArrayDestroy    = oleaut32.NewProc("SafeArrayDestroy")
@@ -48,12 +49,35 @@ func decodeVariantArray(v *ole.VARIANT) (interface{}, error) {
 	if v.VT&ole.VT_ARRAY == 0 {
 		return nil, fmt.Errorf("decodeVariantArray: VARIANT type 0x%x is not an array", v.VT)
 	}
+	// A VT_BYREF array stores a SAFEARRAY** (a pointer to the array pointer) in
+	// Val, not a SAFEARRAY* — dereferencing Val as the array directly would
+	// read the wrong pointer and misdecode or access-violate. Some COM servers
+	// hand back byref arrays; reject them explicitly rather than corrupting.
+	if v.VT&ole.VT_BYREF != 0 {
+		return nil, fmt.Errorf("decodeVariantArray: VT_BYREF arrays (VT 0x%x) are not supported", v.VT)
+	}
 	// The VARIANT's `Val` field is `int64` but actually stores the SAFEARRAY
 	// pointer. Reinterpret the bytes via &Val — not a uintptr round-trip —
 	// to keep go vet happy with `unsafe.Pointer` rules.
 	sa := *(*unsafe.Pointer)(unsafe.Pointer(&v.Val))
 	if sa == nil {
 		return nil, nil
+	}
+	// getElement hands SafeArrayGetElement a VARIANT output buffer, which is
+	// only correct for a VT_VARIANT element type. A typed SAFEARRAY
+	// (VT_ARRAY|VT_BSTR / R8 / …) — common from non-Excel COM servers, since
+	// the core is a general COM layer — would have its element bytes copied
+	// into the head of the VARIANT, poisoning its VT tag: the read would then
+	// silently return nil/wrong scalars (and leak a BSTR per string cell).
+	// Query the array's real element type directly; the SAFEARRAY is more
+	// authoritative than the enclosing VARIANT's VT, which some servers fill
+	// loosely. Reject anything but VT_VARIANT rather than misdecode.
+	vt, err := safeArrayVartype(sa)
+	if err != nil {
+		return nil, err
+	}
+	if vt != ole.VT_VARIANT {
+		return nil, fmt.Errorf("decodeVariantArray: SAFEARRAY element type VT 0x%x is not VT_VARIANT; typed arrays are not supported", vt)
 	}
 
 	dims, _, _ := procSafeArrayGetDim.Call(uintptr(sa))
@@ -114,6 +138,18 @@ func decode2D(sa unsafe.Pointer) ([][]interface{}, error) {
 		out[r] = row
 	}
 	return out, nil
+}
+
+// safeArrayVartype returns the element VARTYPE of a SAFEARRAY via
+// oleaut32!SafeArrayGetVartype. Used to reject typed arrays before the
+// VT_VARIANT-assuming element decode runs.
+func safeArrayVartype(sa unsafe.Pointer) (ole.VT, error) {
+	var vt ole.VT
+	hr, _, _ := procSafeArrayGetVartype.Call(uintptr(sa), uintptr(unsafe.Pointer(&vt)))
+	if hr != 0 {
+		return 0, fmt.Errorf("SafeArrayGetVartype failed: 0x%x", hr)
+	}
+	return vt, nil
 }
 
 func bounds(sa unsafe.Pointer, dim uint32) (int32, int32, error) {
