@@ -564,6 +564,56 @@ func TestExpand_UnknownDirection(t *testing.T) {
 	}
 }
 
+// TestGet_NilValueEmptyCell is the regression test for the assign() nil panic.
+// An empty Excel cell (VT_EMPTY) surfaces as a nil value: Range.Value() → nil,
+// which readGrid wraps as [][]interface{}{{nil}}, shapeResult collapses back to
+// a scalar nil, and Get(dst) calls assign(elem, nil). The pre-fix assign ran
+// the interface{} fast path (dst.Set(reflect.ValueOf(nil))) before the nil
+// check, and reflect.ValueOf(nil) is the zero Value, so Set panicked with
+// "reflect: call of reflect.Value.Set on zero Value". Both *interface{} and a
+// concrete destination must accept nil and yield the zero value without
+// panicking.
+func TestGet_NilValueEmptyCell(t *testing.T) {
+	// *interface{} destination — the documented, common case.
+	var iface interface{} = "sentinel" // start non-nil to prove it is cleared
+	or := &optionedRange{rng: &fakeRange{value: nil}, opts: rangeOptions{shape: NDimScalar}}
+	if err := or.Get(&iface); err != nil {
+		t.Fatalf("Get(&interface{}) on empty cell: %v", err)
+	}
+	if iface != nil {
+		t.Errorf("empty cell should decode to nil interface, got %v (%T)", iface, iface)
+	}
+
+	// Concrete destination — nil must leave it at the zero value.
+	var s string = "sentinel"
+	or2 := &optionedRange{rng: &fakeRange{value: nil}, opts: rangeOptions{shape: NDimScalar}}
+	if err := or2.Get(&s); err != nil {
+		t.Fatalf("Get(&string) on empty cell: %v", err)
+	}
+	if s != "" {
+		t.Errorf("empty cell should decode to zero string, got %q", s)
+	}
+}
+
+// TestGet_ConvertNilResult covers the sibling path the same fix guards: a
+// Convert callback that returns nil (options.go convert path) must land in
+// assign() as nil without panicking.
+func TestGet_ConvertNilResult(t *testing.T) {
+	or := &optionedRange{
+		rng: &fakeRange{value: [][]interface{}{{1.0}}},
+		opts: rangeOptions{
+			convert: func(raw [][]interface{}) (interface{}, error) { return nil, nil },
+		},
+	}
+	var iface interface{} = "sentinel"
+	if err := or.Get(&iface); err != nil {
+		t.Fatalf("Get with nil-returning Convert: %v", err)
+	}
+	if iface != nil {
+		t.Errorf("nil Convert result should decode to nil, got %v (%T)", iface, iface)
+	}
+}
+
 // fakeRange is a stub Range used by the unit tests above. It only implements
 // the methods the Options pipeline actually calls during pure-Go decoding
 // and encoding — Value/Err/SetValue/Resize. The embedded nil Range interface

@@ -646,13 +646,19 @@ func assign(dst reflect.Value, val interface{}) error {
 	if !dst.CanSet() {
 		return errors.New("Options.Get: destination is not settable")
 	}
+	// nil must be handled before the interface{} fast path: reflect.ValueOf(nil)
+	// is the zero Value, and Set(zero Value) panics. An empty cell (VT_EMPTY)
+	// flows here as nil — via readGrid's [][]interface{}{{nil}} → shapeResult →
+	// Get(&v) — and *interface{} is a documented destination, so this is a
+	// common input, not an edge case. Leaving dst at its zero value is correct
+	// for every kind (nil interface, "", 0, ...). Mirrors assignField's order.
+	if val == nil {
+		dst.Set(reflect.Zero(dst.Type()))
+		return nil
+	}
 	// Fast path: interface{} destination accepts anything.
 	if dst.Kind() == reflect.Interface && dst.NumMethod() == 0 {
 		dst.Set(reflect.ValueOf(val))
-		return nil
-	}
-	if val == nil {
-		dst.Set(reflect.Zero(dst.Type()))
 		return nil
 	}
 	vv := reflect.ValueOf(val)
