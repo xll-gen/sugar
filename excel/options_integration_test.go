@@ -93,6 +93,76 @@ func TestOptions_ExpandTable(t *testing.T) {
 	})
 }
 
+// TestOptions_ExpandDown_SingleCell verifies the blank-neighbor guard: a lone
+// value with an empty cell directly below stays a 1x1 read (scalar), instead of
+// End(xlDown) overshooting to the sheet boundary.
+func TestOptions_ExpandDown_SingleCell(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue("solo")
+		// A2 empty.
+		v, err := sheet.Range("A1").Options(excel.Expand("down")).Value()
+		if err != nil {
+			t.Fatalf("Expand=down single cell: %v", err)
+		}
+		if v != "solo" {
+			t.Errorf("blank-neighbor guard: got %T %v, want scalar \"solo\"", v, v)
+		}
+	})
+}
+
+// TestOptions_ExpandDown_SeparateIsland is the key regression: a blank cell
+// below the anchor sits above a *separate* data island further down. The guard
+// must keep the expansion at the anchor rather than letting End(xlDown) jump
+// across the gap to the island (which would read a block full of empty cells).
+func TestOptions_ExpandDown_SeparateIsland(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue("top")
+		// A2..A4 empty; A5 begins an unrelated island.
+		sheet.Range("A5").SetValue("island")
+		sheet.Range("A6").SetValue("island2")
+
+		v, err := sheet.Range("A1").Options(excel.Expand("down")).Value()
+		if err != nil {
+			t.Fatalf("Expand=down separate island: %v", err)
+		}
+		if v != "top" {
+			t.Errorf("guard should stop at anchor; got %T %v, want scalar \"top\"", v, v)
+		}
+	})
+}
+
+// TestOptions_ExpandRight_SingleCell is the row analogue of the single-cell
+// down guard.
+func TestOptions_ExpandRight_SingleCell(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue("solo")
+		// B1 empty.
+		v, err := sheet.Range("A1").Options(excel.Expand("right")).Value()
+		if err != nil {
+			t.Fatalf("Expand=right single cell: %v", err)
+		}
+		if v != "solo" {
+			t.Errorf("blank-neighbor guard: got %T %v, want scalar \"solo\"", v, v)
+		}
+	})
+}
+
+// TestOptions_ExpandTable_SingleCell confirms the table guard fires on both
+// dimensions: an isolated cell expands to just itself.
+func TestOptions_ExpandTable_SingleCell(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("B2").SetValue("solo")
+		// All four neighbors empty.
+		v, err := sheet.Range("B2").Options(excel.Expand("table")).Value()
+		if err != nil {
+			t.Fatalf("Expand=table single cell: %v", err)
+		}
+		if v != "solo" {
+			t.Errorf("table guard: got %T %v, want scalar \"solo\"", v, v)
+		}
+	})
+}
+
 // TestOptions_StructDecode is the end-to-end happy path for the struct-by-
 // header decode driven directly from real Excel data.
 func TestOptions_StructDecode(t *testing.T) {

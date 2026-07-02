@@ -228,9 +228,17 @@ func (r *excelRange) Options(opts ...RangeOption) OptionedRange {
 }
 
 // applyExpand walks the COM `Range.End(direction)` chain to grow `anchor`
-// into the contiguous block in the requested direction(s). xlwings calls
-// these grown ranges "current_region-like" — when the anchor is already
-// blank the grown range is just the anchor itself.
+// into the contiguous block in the requested direction(s), from the anchor's
+// top-left cell (its "origin").
+//
+// Blank-neighbor guard (xlwings parity): before calling End() in a direction
+// we check the cell immediately adjacent to the origin in that direction. If
+// that neighbor is empty, End() would jump to the sheet boundary (row
+// 1,048,576 or column XFD) and drag in every blank cell up to a distant data
+// island, so we do NOT expand that dimension — the origin is its own endpoint.
+// This mirrors xlwings' expansion.py, which only calls end() when the adjacent
+// raw_value is non-empty. For "table" both the down and right dimensions are
+// guarded independently.
 //
 // Implementation note: Excel COM accepts string addresses for the
 // `Worksheet.Range(cell1, cell2)` form, and go-ole's Invoke dispatcher
@@ -245,43 +253,89 @@ func applyExpand(anchor Range, direction string) (Range, error) {
 	case "right":
 		return expandFromEnd(anchor, xlToRight)
 	case "table":
-		startAddr, err := anchor.Get("Cells", 1, 1).Get("Address").Value()
+		origin := anchor.Cells(1, 1)
+		// Bottom-left corner (grow down) and top-right corner (grow right),
+		// each guarded against a blank neighbor. Worksheet.Range(cornerA,
+		// cornerB) is the bounding rectangle of the two, i.e. the full block
+		// origin-row..bottom-row × origin-col..right-col.
+		bottomAddr, err := endpointAddr(origin, xlDown)
 		if err != nil {
-			return nil, fmt.Errorf("expand(table): anchor address: %w", err)
+			return nil, fmt.Errorf("expand(table): bottom address: %w", err)
 		}
-		// End(xlDown) from the anchor's top-left, then End(xlToRight) from
-		// the resulting row's anchor column gives the bottom-right corner
-		// of the contiguous block — matching xlwings' table expansion.
-		bottomEnd := anchor.Get("End", xlDown)
-		rightEnd := bottomEnd.Get("End", xlToRight)
-		endAddr, err := rightEnd.Get("Address").Value()
+		rightAddr, err := endpointAddr(origin, xlToRight)
 		if err != nil {
-			return nil, fmt.Errorf("expand(table): bottom-right address: %w", err)
+			return nil, fmt.Errorf("expand(table): right address: %w", err)
 		}
 		parent := anchor.Get("Worksheet")
-		joined := parent.Get("Range", toString(startAddr), toString(endAddr))
+		joined := parent.Get("Range", bottomAddr, rightAddr)
 		return wrapRange(joined), nil
 	default:
 		return nil, fmt.Errorf("Expand: unsupported direction %q (use \"table\", \"down\", or \"right\")", direction)
 	}
 }
 
-// expandFromEnd creates a new Range spanning anchor through anchor.End(dir).
-// Used for the "down" and "right" Expand variants. We resolve both endpoint
-// addresses to strings before re-asking Worksheet.Range — see applyExpand's
-// note on why we don't pass chains as COM parameters.
+// expandFromEnd creates a new Range spanning the anchor's origin through its
+// End(dir) endpoint. Used for the "down" and "right" Expand variants. We
+// resolve both endpoint addresses to strings before re-asking Worksheet.Range
+// — see applyExpand's note on why we don't pass chains as COM parameters.
 func expandFromEnd(anchor Range, direction int32) (Range, error) {
-	startAddr, err := anchor.Get("Address").Value()
+	origin := anchor.Cells(1, 1)
+	startAddr, err := origin.Address()
 	if err != nil {
 		return nil, fmt.Errorf("expand: anchor address: %w", err)
 	}
-	endAddr, err := anchor.Get("End", direction).Get("Address").Value()
+	endAddr, err := endpointAddr(origin, direction)
 	if err != nil {
 		return nil, fmt.Errorf("expand: end address: %w", err)
 	}
 	parent := anchor.Get("Worksheet")
-	joined := parent.Get("Range", toString(startAddr), toString(endAddr))
+	joined := parent.Get("Range", startAddr, endAddr)
 	return wrapRange(joined), nil
+}
+
+// endpointAddr returns the address of the far cell of the contiguous block
+// starting at the single-cell origin in the given direction, applying the
+// blank-neighbor guard (see applyExpand): when the adjacent cell is empty the
+// origin is its own endpoint, so End() is never called into empty space.
+func endpointAddr(origin Range, direction int32) (string, error) {
+	dr, dc := neighborOffset(direction)
+	blank, err := cellBlank(origin.Offset(dr, dc))
+	if err != nil {
+		return "", err
+	}
+	end := origin
+	if !blank {
+		end = wrapRange(origin.Get("End", direction))
+	}
+	return end.Address()
+}
+
+// neighborOffset returns the (row, col) delta from an anchor to the cell
+// immediately adjacent in the given End() direction.
+func neighborOffset(direction int32) (int, int) {
+	switch direction {
+	case xlDown:
+		return 1, 0
+	case xlToRight:
+		return 0, 1
+	}
+	return 0, 0
+}
+
+// cellBlank reports whether a single-cell range holds no data — nil (an empty
+// cell) or an empty string. Matches xlwings' `raw_value in (None, "")` test.
+func cellBlank(cell Range) (bool, error) {
+	v, err := cell.Value()
+	if err != nil {
+		return false, err
+	}
+	switch t := v.(type) {
+	case nil:
+		return true, nil
+	case string:
+		return t == "", nil
+	}
+	return false, nil
 }
 
 // Err exposes any deferred construction error (e.g. invalid Expand direction).

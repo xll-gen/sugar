@@ -614,6 +614,67 @@ func TestGet_ConvertNilResult(t *testing.T) {
 	}
 }
 
+// TestNeighborOffset maps each End() direction to the adjacent-cell delta.
+func TestNeighborOffset(t *testing.T) {
+	if dr, dc := neighborOffset(xlDown); dr != 1 || dc != 0 {
+		t.Errorf("xlDown: got (%d,%d), want (1,0)", dr, dc)
+	}
+	if dr, dc := neighborOffset(xlToRight); dr != 0 || dc != 1 {
+		t.Errorf("xlToRight: got (%d,%d), want (0,1)", dr, dc)
+	}
+}
+
+// TestCellBlank covers the xlwings `raw_value in (None, "")` blank test.
+func TestCellBlank(t *testing.T) {
+	cases := []struct {
+		v    interface{}
+		want bool
+	}{
+		{nil, true},
+		{"", true},
+		{"x", false},
+		{0.0, false}, // a zero number is data, not blank
+		{false, false},
+	}
+	for _, c := range cases {
+		got, err := cellBlank(&fakeRange{value: c.v})
+		if err != nil {
+			t.Fatalf("cellBlank(%v): %v", c.v, err)
+		}
+		if got != c.want {
+			t.Errorf("cellBlank(%#v) = %v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
+// TestEndpointAddr_BlankNeighborGuard is the Excel-free cover for the defect-4
+// guard: when the cell adjacent to the origin in the expansion direction is
+// blank, End() must NOT be called (fakeRange's embedded nil Range panics on
+// Get), and the origin is its own endpoint. Pre-fix, End() was called
+// unconditionally, which here would panic and against Excel would overshoot to
+// a distant data island / the sheet edge.
+func TestEndpointAddr_BlankNeighborGuard(t *testing.T) {
+	// nil neighbor below the anchor.
+	origin := &fakeRange{address: "$A$1", offsetValue: nil}
+	got, err := endpointAddr(origin, xlDown)
+	if err != nil {
+		t.Fatalf("endpointAddr(down, blank): %v", err)
+	}
+	if got != "$A$1" {
+		t.Errorf("blank down-neighbor: got %q, want $A$1 (guard should skip End)", got)
+	}
+
+	// empty-string neighbor to the right.
+	origin2 := &fakeRange{address: "$A$1", offsetValue: ""}
+	got, err = endpointAddr(origin2, xlToRight)
+	if err != nil {
+		t.Fatalf("endpointAddr(right, blank): %v", err)
+	}
+	if got != "$A$1" {
+		t.Errorf("blank right-neighbor: got %q, want $A$1", got)
+	}
+}
+
 // fakeRange is a stub Range used by the unit tests above. It only implements
 // the methods the Options pipeline actually calls during pure-Go decoding
 // and encoding — Value/Err/SetValue/Resize. The embedded nil Range interface
@@ -629,9 +690,16 @@ type fakeRange struct {
 	// write recording for Options.Set tests
 	setValue                 interface{}
 	resizedRows, resizedCols int
+
+	// expand blank-neighbor guard tests: Address() returns address, and
+	// Offset(...) returns a cell whose Value() is offsetValue.
+	address     string
+	offsetValue interface{}
 }
 
 func (f *fakeRange) Value() (interface{}, error)  { return f.value, f.err }
 func (f *fakeRange) Err() error                   { return f.err }
 func (f *fakeRange) SetValue(v interface{}) Range { f.setValue = v; return f }
 func (f *fakeRange) Resize(r, c int) Range        { f.resizedRows, f.resizedCols = r, c; return f }
+func (f *fakeRange) Address() (string, error)     { return f.address, f.err }
+func (f *fakeRange) Offset(r, c int) Range        { return &fakeRange{value: f.offsetValue} }
