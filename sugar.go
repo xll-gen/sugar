@@ -305,9 +305,19 @@ func (c *chain) Call(method string, params ...interface{}) Chain {
 // operations on the parent object (e.g. `app.Put("Visible", true).Get(...)`).
 // On error, a fresh error-only chain is returned — it does *not* share the
 // parent's IDispatch, so manually Release()ing it cannot double-free.
+//
+// A nil dispatch is a distinct "dispatch is nil" error, mirroring Get/Call
+// (and Store). A COM `Nothing` chain — e.g. ActiveWorkbook with no open book,
+// or a Range derived from one — has err==nil and disp==nil; without this guard
+// Put would silently no-op and return the same chain with Err()==nil, so writes
+// like `app.ActiveWorkbook().SetSaved(true)` or SetValue on a Nothing-derived
+// range would vanish without surfacing an error.
 func (c *chain) Put(prop string, params ...interface{}) Chain {
-	if c.err != nil || c.disp == nil {
+	if c.err != nil {
 		return c
+	}
+	if c.disp == nil {
+		return &chain{err: errors.New("dispatch is nil"), ctx: c.ctx}
 	}
 
 	args, cleanup, err := normalizeParams(params)
@@ -348,6 +358,10 @@ var (
 // If the callback returns a non-nil error, the iteration stops and the error
 // is recorded in the returned Chain.
 func (c *chain) ForEach(callback func(item Chain) error) Chain {
+	// Unlike Get/Call/Put, a nil dispatch is intentionally NOT an error here: a
+	// COM `Nothing` collection (or any absent iterable) is semantically an empty
+	// sequence, so iterating it zero times and returning the same chain is the
+	// correct, side-effect-free result — not a silently dropped write.
 	if c.err != nil || c.disp == nil {
 		return c
 	}

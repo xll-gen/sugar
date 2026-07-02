@@ -54,6 +54,17 @@ func TestChain_Mock(t *testing.T) {
 			t.Errorf("initial error should be nil, got %v", err)
 		}
 	})
+
+	t.Run("Put On Nil Dispatch Errors", func(t *testing.T) {
+		// A nil-dispatch chain (err==nil, disp==nil — the shape a COM `Nothing`
+		// result takes, e.g. ActiveWorkbook with no open book) must surface a
+		// "dispatch is nil" error from Put, symmetric with Get/Call/Store —
+		// not silently no-op and report success, which would drop the write.
+		c := sugar.From(nil)
+		if err := c.Put("Value", true).Err(); err == nil {
+			t.Error("Put on nil dispatch should error, got nil (silent no-op)")
+		}
+	})
 	
 	t.Run("Create invalid ProgID", func(t *testing.T) {
 		sugar.Do(func(ctx sugar.Context) error {
