@@ -371,7 +371,7 @@ sugar.Do(func(ctx sugar.Context) error {
 
 The `sugar.Context` acts as a resource collector (Arena). Any object created via `ctx.Create`, `ctx.From`, or derived from a chain is automatically registered with that context and cleaned up when the `Do` block ends.
 
-**Manual `Release()` calls are no longer necessary.**
+**Manual `Release()` calls are not necessary.**
 
 ### 5. Skipping Optional COM Parameters (`sugar.Missing`)
 
