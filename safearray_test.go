@@ -281,6 +281,87 @@ func TestNormalizeParams_TimePointer(t *testing.T) {
 	}
 }
 
+// TestDecodeVariantScalar_Currency is the Excel-free regression for the
+// VT_CY gap in go-ole's Value(): a currency VARIANT (an int64 scaled by 1e-4)
+// must decode to the plain float64 amount, not the bare nil go-ole returns.
+func TestDecodeVariantScalar_Currency(t *testing.T) {
+	// 12.34 currency == 123400 in CY units (1e-4 scale).
+	v := ole.NewVariant(ole.VT_CY, 123400)
+	if raw := v.Value(); raw != nil {
+		t.Fatalf("precondition: go-ole VT_CY Value() now returns %v (%T); test premise stale", raw, raw)
+	}
+	got := decodeVariantScalar(&v)
+	if got != 12.34 {
+		t.Errorf("VT_CY decode: got %v (%T), want 12.34", got, got)
+	}
+}
+
+// TestDecodeVariantScalar_Decimal covers the VT_DECIMAL gap: the DECIMAL
+// overlays the VARIANT, and VarR8FromDec must recover the float64 value.
+func TestDecodeVariantScalar_Decimal(t *testing.T) {
+	var v ole.VARIANT
+	ole.VariantInit(&v)
+	v.VT = ole.VT_DECIMAL
+	// Lay 12.34 into the overlaid DECIMAL: coefficient 1234, scale 2.
+	dec := (*oleDecimal)(unsafe.Pointer(&v))
+	dec.scale = 2
+	dec.sign = 0
+	dec.hi32 = 0
+	dec.lo64 = 1234
+	got := decodeVariantScalar(&v)
+	gf, ok := got.(float64)
+	if !ok || math.Abs(gf-12.34) > 1e-9 {
+		t.Errorf("VT_DECIMAL decode: got %v (%T), want 12.34", got, got)
+	}
+}
+
+// TestDecodeVariantScalar_Error covers the VT_ERROR gap: a worksheet error
+// cell must become a typed CellError (so it is distinguishable from a blank
+// cell), while the DISP_E_PARAMNOTFOUND marker stays nil.
+func TestDecodeVariantScalar_Error(t *testing.T) {
+	// #DIV/0! == cvErr 2007, SCODE 0x800A0000 | 2007.
+	div0 := ole.NewVariant(ole.VT_ERROR, 0x800A07D7)
+	got := decodeVariantScalar(&div0)
+	ce, ok := got.(CellError)
+	if !ok {
+		t.Fatalf("VT_ERROR decode: got %T, want CellError", got)
+	}
+	if ce.String() != "#DIV/0!" {
+		t.Errorf("CellError.String(): got %q, want #DIV/0!", ce.String())
+	}
+	if ce.SCode != 0x800A07D7 {
+		t.Errorf("CellError.SCode: got 0x%08X, want 0x800A07D7", ce.SCode)
+	}
+
+	// The omitted-optional-parameter marker is not a worksheet error.
+	missing := ole.NewVariant(ole.VT_ERROR, dispEParamNotFound)
+	if got := decodeVariantScalar(&missing); got != nil {
+		t.Errorf("DISP_E_PARAMNOTFOUND should decode to nil, got %v (%T)", got, got)
+	}
+}
+
+// TestCellError_String spot-checks the CVErr → Excel text mapping.
+func TestCellError_String(t *testing.T) {
+	cases := map[uint32]string{
+		0x800A07D0: "#NULL!",  // 2000
+		0x800A07D7: "#DIV/0!", // 2007
+		0x800A07DF: "#VALUE!", // 2015
+		0x800A07E7: "#REF!",   // 2023
+		0x800A07ED: "#NAME?",  // 2029
+		0x800A07F4: "#NUM!",   // 2036
+		0x800A07FA: "#N/A",    // 2042
+	}
+	for scode, want := range cases {
+		if got := (CellError{SCode: scode}).String(); got != want {
+			t.Errorf("CellError{0x%08X}.String() = %q, want %q", scode, got, want)
+		}
+	}
+	// Unknown code falls back to the hex form.
+	if got := (CellError{SCode: 0xDEADBEEF}).String(); got != "#ERR(0xDEADBEEF)" {
+		t.Errorf("unknown CellError.String() = %q, want #ERR(0xDEADBEEF)", got)
+	}
+}
+
 func TestNeedsArrayEncoding(t *testing.T) {
 	cases := []struct {
 		in   interface{}

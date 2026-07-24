@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/xll-gen/sugar"
 	"github.com/xll-gen/sugar/excel"
 )
 
@@ -392,6 +393,82 @@ func TestRange_SetFormula2Array(t *testing.T) {
 			if got, ok := v.(float64); !ok || got != want {
 				t.Errorf("A%d = %v (%T); want %v", i+1, v, v, want)
 			}
+		}
+	})
+}
+
+// TestRange_CurrencyCell is the regression for the VT_CY silent-nil decode.
+// A currency-formatted cell makes Excel return the value as a VT_CY VARIANT
+// through Range.Value (not Value2). Before the decode fix, go-ole's Value()
+// had no VT_CY case and returned a bare nil — indistinguishable from an empty
+// cell. It must now come back as the plain float64 amount (xlwings returns
+// currency cells as numbers). On locales where the format maps to a Double
+// rather than CY the result is still the same float64, so the assertion holds
+// regardless of the host currency locale.
+func TestRange_CurrencyCell(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		rng := sheet.Range("A1")
+		// Korean-Won currency mask — VT_CY on a ko-KR host.
+		rng.SetNumberFormat("₩#,##0.00")
+		rng.SetValue(1234.5)
+
+		got, err := rng.Value()
+		if err != nil {
+			t.Fatalf("Value(): %v", err)
+		}
+		f, ok := got.(float64)
+		if !ok {
+			t.Fatalf("currency cell decoded to %T (%v); want float64 (not silent nil)", got, got)
+		}
+		if f != 1234.5 {
+			t.Errorf("currency cell: got %v, want 1234.5", f)
+		}
+	})
+}
+
+// TestRange_ErrorCell is the regression for the VT_ERROR silent-nil decode.
+// A #DIV/0! cell must decode to a typed sugar.CellError, not the bare nil that
+// left it indistinguishable from an empty cell.
+func TestRange_ErrorCell(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		rng := sheet.Range("A1")
+		rng.SetFormula("=1/0")
+
+		got, err := rng.Value()
+		if err != nil {
+			t.Fatalf("Value(): %v", err)
+		}
+		ce, ok := got.(sugar.CellError)
+		if !ok {
+			t.Fatalf("error cell decoded to %T (%v); want sugar.CellError (not silent nil)", got, got)
+		}
+		if ce.String() != "#DIV/0!" {
+			t.Errorf("error cell: got %q, want #DIV/0!", ce.String())
+		}
+	})
+}
+
+// TestRange_ErrorCellInGrid confirms the error decode also fires inside a
+// multi-cell SAFEARRAY read (getElement path), not just scalar reads.
+func TestRange_ErrorCellInGrid(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue(10.0)
+		sheet.Range("A2").SetFormula("=1/0")
+
+		got, err := sheet.Range("A1", "A2").Value()
+		if err != nil {
+			t.Fatalf("Value(): %v", err)
+		}
+		grid, ok := got.([][]interface{})
+		if !ok {
+			t.Fatalf("expected [][]interface{}, got %T (%v)", got, got)
+		}
+		if grid[0][0] != 10.0 {
+			t.Errorf("A1: got %v, want 10.0", grid[0][0])
+		}
+		ce, ok := grid[1][0].(sugar.CellError)
+		if !ok || ce.String() != "#DIV/0!" {
+			t.Errorf("A2 in grid: got %v (%T); want CellError #DIV/0!", grid[1][0], grid[1][0])
 		}
 	})
 }

@@ -31,6 +31,7 @@ var (
 	procSafeArrayCreate     = oleaut32.NewProc("SafeArrayCreate")
 	procSafeArrayPutElement = oleaut32.NewProc("SafeArrayPutElement")
 	procSafeArrayDestroy    = oleaut32.NewProc("SafeArrayDestroy")
+	procVarR8FromDec        = oleaut32.NewProc("VarR8FromDec")
 )
 
 // decodeVariantArray turns a VARIANT carrying `VT_ARRAY | VT_VARIANT` — the
@@ -374,6 +375,134 @@ func setNumericVariant(out *ole.VARIANT, f float64) {
 	*out = ole.NewVariant(ole.VT_R8, int64(math.Float64bits(f)))
 }
 
+// vtTypeMask isolates the base VARTYPE from a VARIANT's VT field, stripping
+// the VT_ARRAY / VT_BYREF / VT_VECTOR flag bits (Win32 VT_TYPEMASK = 0x0fff).
+const vtTypeMask ole.VT = 0x0fff
+
+// CellError is the typed Go representation of an Excel error VARIANT (VT_ERROR)
+// — a cell holding #DIV/0!, #N/A, #VALUE!, and the like. go-ole v1.3.0's
+// (*VARIANT).Value() has no VT_ERROR case and returns a bare nil, which is
+// indistinguishable from an empty cell; decodeVariantScalar returns a CellError
+// instead so callers can tell "error cell" from "blank cell" apart.
+//
+// SCode is the raw COM SCODE from the VARIANT. Excel encodes its worksheet
+// error values as 0x800A0000 | cvErr, so SCode&0xffff recovers the CVErr code
+// (2007 for #DIV/0!, 2042 for #N/A, …). String / Error render the familiar
+// Excel error text, matching how xlwings surfaces error cells.
+type CellError struct {
+	SCode uint32
+}
+
+// String renders the Excel error text for the CellError's SCODE (e.g.
+// "#DIV/0!"). Unknown codes fall back to a hex form.
+func (e CellError) String() string {
+	switch e.SCode & 0xffff {
+	case 2000:
+		return "#NULL!"
+	case 2007:
+		return "#DIV/0!"
+	case 2015:
+		return "#VALUE!"
+	case 2023:
+		return "#REF!"
+	case 2029:
+		return "#NAME?"
+	case 2036:
+		return "#NUM!"
+	case 2042:
+		return "#N/A"
+	case 2043:
+		return "#GETTING_DATA"
+	case 2045:
+		return "#SPILL!"
+	case 2047:
+		return "#CONNECT!"
+	case 2048:
+		return "#BLOCKED!"
+	case 2049:
+		return "#UNKNOWN!"
+	case 2050:
+		return "#FIELD!"
+	case 2051:
+		return "#CALC!"
+	}
+	return fmt.Sprintf("#ERR(0x%08X)", e.SCode)
+}
+
+// Error lets CellError satisfy the error interface — an error cell is a
+// legitimate error condition when a caller wants to treat it as one.
+func (e CellError) Error() string { return e.String() }
+
+// oleDecimal mirrors the Win32 DECIMAL struct (16 bytes). When a VARIANT holds
+// VT_DECIMAL the DECIMAL overlays the whole VARIANT starting at offset 0 — its
+// wReserved field aligns with the VARIANT's VT field — so a *VARIANT can be
+// reinterpreted as a *oleDecimal.
+type oleDecimal struct {
+	wReserved uint16
+	scale     uint8
+	sign      uint8
+	hi32      uint32
+	lo64      uint64
+}
+
+// decodeVariantScalar converts a scalar VARIANT to a Go value. It covers the
+// VT_CY (currency), VT_DECIMAL, and VT_ERROR cases that go-ole v1.3.0's
+// (*VARIANT).Value() switch omits — those fall through to a bare nil, making a
+// currency-formatted or #DIV/0! cell indistinguishable from an empty one.
+// Everything else delegates to go-ole's Value().
+//
+//   - VT_CY:      the OLE CY is an int64 scaled by 1e-4; return Val/10000 as
+//     float64 (xlwings returns currency cells as plain numbers).
+//   - VT_DECIMAL: converted to float64 via oleaut32!VarR8FromDec.
+//   - VT_ERROR:   returned as a typed CellError, except DISP_E_PARAMNOTFOUND
+//     (the "omitted optional parameter" marker, never a real cell value),
+//     which stays nil.
+//
+// VT_BYREF variants of CY/DECIMAL (Val holds a pointer to the value) are
+// dereferenced. The unsafe.Pointer(&Val) reinterpret pattern mirrors
+// decodeVariantArray's SAFEARRAY handling and keeps `go vet` happy.
+func decodeVariantScalar(v *ole.VARIANT) interface{} {
+	byref := v.VT&ole.VT_BYREF != 0
+	switch v.VT & vtTypeMask {
+	case ole.VT_CY:
+		cy := v.Val
+		if byref {
+			p := *(*unsafe.Pointer)(unsafe.Pointer(&v.Val))
+			if p == nil {
+				return nil
+			}
+			cy = *(*int64)(p)
+		}
+		return float64(cy) / 10000.0
+	case ole.VT_DECIMAL:
+		dec := (*oleDecimal)(unsafe.Pointer(v))
+		if byref {
+			p := *(*unsafe.Pointer)(unsafe.Pointer(&v.Val))
+			if p == nil {
+				return nil
+			}
+			dec = (*oleDecimal)(p)
+		}
+		var out float64
+		hr, _, _ := procVarR8FromDec.Call(
+			uintptr(unsafe.Pointer(dec)),
+			uintptr(unsafe.Pointer(&out)),
+		)
+		if hr != 0 {
+			return nil
+		}
+		return out
+	case ole.VT_ERROR:
+		scode := uint32(v.Val)
+		if scode == dispEParamNotFound {
+			// The omitted-optional-parameter marker, not a worksheet error.
+			return nil
+		}
+		return CellError{SCode: scode}
+	}
+	return v.Value()
+}
+
 // getElement reads one VARIANT cell from a VT_ARRAY|VT_VARIANT SAFEARRAY at
 // `indices` (one entry per dimension), converts it to a Go value, and clears
 // the temporary VARIANT.
@@ -388,7 +517,7 @@ func getElement(sa unsafe.Pointer, indices []int32) (interface{}, error) {
 	if hr != 0 {
 		return nil, fmt.Errorf("SafeArrayGetElement failed: 0x%x", hr)
 	}
-	val := v.Value()
+	val := decodeVariantScalar(&v)
 	vt := v.VT
 	v.Clear()
 	// For object-typed cells, v.Value() returned the raw COM interface pointer

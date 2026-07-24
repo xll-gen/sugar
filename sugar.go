@@ -532,6 +532,11 @@ func (c *chain) IsDispatch() bool {
 //
 // go-ole's built-in `VARIANT.Value()` returns nil for these types, so we
 // decode them here. IDispatch results are not values — use Store().
+//
+// Scalar results also route through decodeVariantScalar, which fills the
+// VT_CY / VT_DECIMAL / VT_ERROR gaps in go-ole's Value() switch (currency and
+// error cells would otherwise decode to a bare nil). VT_ERROR cells become a
+// typed CellError.
 func (c *chain) Value() (interface{}, error) {
 	if c.err != nil {
 		return nil, c.err
@@ -545,11 +550,14 @@ func (c *chain) Value() (interface{}, error) {
 	if c.lastResult.VT&ole.VT_ARRAY != 0 {
 		return decodeVariantArray(c.lastResult)
 	}
-	return c.lastResult.Value(), nil
+	// decodeVariantScalar covers the VT_CY / VT_DECIMAL / VT_ERROR cases that
+	// go-ole's (*VARIANT).Value() drops to nil (a currency or #DIV/0! cell
+	// would otherwise be indistinguishable from an empty one); it delegates to
+	// Value() for everything else.
+	return decodeVariantScalar(c.lastResult), nil
 }
 
 // Err returns the first error encountered in the chain.
 func (c *chain) Err() error {
 	return c.err
 }
-
