@@ -487,7 +487,7 @@ func evalBinary(op string, left, right interface{}) (interface{}, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("unsupported binary operation: %v %s %v", reflect.TypeOf(left), op, reflect.TypeOf(right))
+	return nil, fmt.Errorf("unsupported binary operation: %T %s %T", left, op, right)
 }
 
 func isNumber(v reflect.Value) bool {

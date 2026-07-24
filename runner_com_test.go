@@ -59,6 +59,62 @@ func TestDo_OnPreInitializedSTAThread(t *testing.T) {
 	_ = d.Release()
 }
 
+// TestNestedScope_CrossThreadReinitializes pins the item-4 hardening: the
+// "already initialized" flag is scoped to the initializing OS thread, so a
+// Context that crosses a goroutine/thread boundary cannot silently authorize
+// skipping COM init on a fresh, un-initialized thread.
+//
+// The outer Do initializes COM on the main goroutine's locked thread and stores
+// that thread's id. We then run a *nested* Do (reusing the outer Context) on a
+// different, freshly locked OS thread. Before the fix the bare-bool flag made
+// this look nested, init was skipped, and the CoCreateInstance below failed
+// with CO_E_NOTINITIALIZED. After the fix the thread-id mismatch forces a full
+// init on the new thread, so the create succeeds.
+func TestNestedScope_CrossThreadReinitializes(t *testing.T) {
+	err := sugar.Do(func(ctx sugar.Context) error {
+		if err := ctx.Create("Scripting.Dictionary").Err(); err != nil {
+			t.Skipf("Scripting.Dictionary unavailable: %v", err)
+			return nil
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			// Nested Do on a thread the outer scope never initialized.
+			done <- ctx.Do(func(inner sugar.Context) error {
+				return inner.Create("Scripting.Dictionary").Err()
+			})
+		}()
+
+		if e := <-done; e != nil {
+			t.Errorf("cross-thread nested Do must re-init COM and succeed, got: %v", e)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("outer sugar.Do: %v", err)
+	}
+}
+
+// TestNestedScope_SameThreadStillSkipsInit is the companion invariant: a
+// genuinely nested Do on the *same* locked thread must still be treated as
+// nested (no double init, no over-release), and COM must remain usable.
+func TestNestedScope_SameThreadStillSkipsInit(t *testing.T) {
+	err := sugar.Do(func(ctx sugar.Context) error {
+		if err := ctx.Create("Scripting.Dictionary").Err(); err != nil {
+			t.Skipf("Scripting.Dictionary unavailable: %v", err)
+			return nil
+		}
+		return ctx.Do(func(inner sugar.Context) error {
+			return inner.Create("Scripting.Dictionary").Err()
+		})
+	})
+	if err != nil {
+		t.Fatalf("same-thread nested Do: %v", err)
+	}
+}
+
 // TestValueChainsAreTracked pins the BSTR-leak fix: chains carrying plain
 // VARIANT results (not IDispatch) must be registered with the arena so
 // Release() VariantClears them at scope end. We observe tracking through the

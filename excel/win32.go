@@ -70,12 +70,15 @@ func classNameOf(hwnd uintptr) string {
 
 // Enumeration callbacks MUST be created exactly once, at package scope.
 // syscall.NewCallback allocates a C-callable thunk that the Go runtime NEVER
-// frees, and each process has a hard cap (runtime maxCallback = 2000). Creating
-// a fresh closure per call — as an earlier version did to capture (pid, found)
-// — leaked one slot per GetApplicationByPID, so a long-lived Go server (every
-// ribbon command runs the attach path) would hit an unrecoverable
-// "too many callback functions" runtime throw after ~2000 commands and take
-// the whole process down.
+// frees for the life of the process. The old per-process cap (~2000) that once
+// turned this leak into a hard "too many callback functions" throw is stale —
+// modern Go runtimes (verified on 1.26.3) absorb 200k+ callbacks without a
+// symptom, so the crash is no longer the concern. The unbounded thunk *leak*
+// itself is still a real defect: an earlier version created a fresh closure
+// per call to capture (pid, found), so every GetApplicationByPID — run on each
+// ribbon command in a long-lived Go server — leaked one thunk permanently.
+// Hoisting the callback to a package var (state threaded through lParam, below)
+// remains the correct fix regardless of the cap.
 //
 // To keep a single reusable callback while still carrying per-call search
 // state, the state travels through the enumeration's lParam as a pointer to a
@@ -194,7 +197,7 @@ func applicationDispatchForPID(pid uint32) (*ole.IDispatch, error) {
 		appVar.Clear()
 		return nil, fmt.Errorf("Window.Application returned nil dispatch for Excel PID %d", pid)
 	}
-	app.AddRef()  // own a ref independent of the VARIANT
+	app.AddRef()   // own a ref independent of the VARIANT
 	appVar.Clear() // releases the VARIANT's own ref
 	return app, nil
 }

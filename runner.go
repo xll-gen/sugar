@@ -5,9 +5,25 @@ package sugar
 import (
 	"context"
 	"runtime"
+	"syscall"
 
 	"github.com/go-ole/go-ole"
 )
+
+var (
+	kernel32               = syscall.NewLazyDLL("kernel32.dll")
+	procGetCurrentThreadID = kernel32.NewProc("GetCurrentThreadId")
+)
+
+// getCurrentThreadID returns the OS thread id of the calling thread
+// (kernel32!GetCurrentThreadId). Used to scope the "already initialized by an
+// outer sugar scope" flag to the thread that actually performed the COM init,
+// so the nested-scope shortcut can never skip initialization on a different,
+// un-initialized thread.
+func getCurrentThreadID() uint32 {
+	id, _, _ := procGetCurrentThreadID.Call()
+	return uint32(id)
+}
 
 // Runner configures the execution environment for COM operations.
 type Runner struct {
@@ -17,8 +33,8 @@ type Runner struct {
 
 // COM HRESULTs that CoInitialize can return without the thread being unusable.
 const (
-	hrSFalse           = 0x00000001 // S_FALSE: already initialized on this thread
-	hrRPCEChangedMode  = 0x80010106 // RPC_E_CHANGED_MODE: thread is already in a different apartment model
+	hrSFalse          = 0x00000001 // S_FALSE: already initialized on this thread
+	hrRPCEChangedMode = 0x80010106 // RPC_E_CHANGED_MODE: thread is already in a different apartment model
 )
 
 // initializeCOM calls CoInitialize and reports whether a matching
@@ -59,24 +75,40 @@ func (r *Runner) Do(fn func(ctx Context) error) (err error) {
 		r.parent = context.Background()
 	}
 
-	isNested := !r.forceInit && r.parent.Value(activeSugarKey) != nil
+	// A scope is "nested" (COM already initialized, no LockOSThread owed) only
+	// when an outer sugar scope initialized COM *on this very thread*. The flag
+	// stored in the context is the initializing thread's id, not a bare bool:
+	// context values propagate across goroutine boundaries, so a bool would let
+	// a Context captured by an outer Do silently authorize skipping init on a
+	// different, un-initialized OS thread (a Do block is LockOSThread-pinned, so
+	// on the genuinely-nested same-goroutine path the id is stable and matches).
+	// Context.Go is unaffected: it sets forceInit, short-circuiting this check.
+	isNested := false
+	if !r.forceInit {
+		if owner, ok := r.parent.Value(activeSugarKey).(uint32); ok {
+			isNested = owner == getCurrentThreadID()
+		}
+	}
 
 	if !isNested {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
-		needUninit, err := initializeCOM()
-		if err != nil {
-			return err
+		needUninit, initErr := initializeCOM()
+		if initErr != nil {
+			return initErr
 		}
 		if needUninit {
 			defer ole.CoUninitialize()
 		}
 	}
 
-	innerStdCtx := context.WithValue(r.parent, activeSugarKey, true)
+	// Record the id of the thread this scope runs on (locked above when not
+	// nested; the parent's locked thread when nested). A descendant scope only
+	// treats itself as nested when it observes this same id.
+	innerStdCtx := context.WithValue(r.parent, activeSugarKey, getCurrentThreadID())
 	ctx := NewContext(innerStdCtx)
-	
+
 	defer func() {
 		releaseErr := ctx.Release()
 		if err == nil {

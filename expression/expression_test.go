@@ -66,6 +66,25 @@ func TestEval_CompileRun(t *testing.T) {
 	})
 }
 
+// TestEval_UnsupportedBinaryMessage documents the item-5a format: the
+// unsupported-binary-operation error names both operand types symmetrically via
+// %T. Subtracting a string from a number reaches evalBinary's fallthrough.
+func TestEval_UnsupportedBinaryMessage(t *testing.T) {
+	_, err := Eval("2 - 'a'", nil)
+	if err == nil {
+		t.Fatal("expected an error for number - string")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "unsupported binary operation:") {
+		t.Fatalf("unexpected error: %v", msg)
+	}
+	// Both operand types must appear (the %T substitutions), not just one side:
+	// the left operand is numeric and the right is a string.
+	if !strings.Contains(msg, "int") || !strings.Contains(msg, "string") {
+		t.Errorf("error should name both operand types, got: %v", msg)
+	}
+}
+
 func TestEval_EnvMap(t *testing.T) {
 	sugar.Do(func(ctx sugar.Context) error {
 		dict := setupDict(t, ctx)
