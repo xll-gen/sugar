@@ -3,8 +3,44 @@
 package excel
 
 import (
+	"errors"
+
+	ole "github.com/go-ole/go-ole"
+
 	"github.com/xll-gen/sugar"
 )
+
+// COM HRESULTs that mean "the requested name is not in the collection" — the
+// only failures Contains is allowed to fold into (false, nil). Everything else
+// (permission errors, disconnected server, marshaling faults) is a real error
+// and must propagate.
+const (
+	hrDispEException = 0x80020009 // DISP_E_EXCEPTION (wraps the Excel scode below)
+	hrDispEBadIndex  = 0x8002000B // DISP_E_BADINDEX (bad Item index)
+	hrXlItemNotFound = 0x800A03EC // Excel automation "item not found"
+)
+
+// isNameNotFound reports whether err is a "no such name" miss rather than a
+// genuine COM failure. Excel delivers the miss two ways: DISP_E_BADINDEX is
+// returned directly by Invoke, while a name lookup surfaces 0x800A03EC nested
+// inside a DISP_E_EXCEPTION's EXCEPINFO (go-ole stores it as the OleError's
+// SubError). Both shapes are classified as not-found; any other HRESULT is a
+// real error.
+func isNameNotFound(err error) bool {
+	var oleErr *ole.OleError
+	if !errors.As(err, &oleErr) {
+		return false
+	}
+	switch uint32(oleErr.Code()) {
+	case hrDispEBadIndex, hrXlItemNotFound:
+		return true
+	case hrDispEException:
+		if ex, ok := oleErr.SubError().(ole.EXCEPINFO); ok {
+			return ex.SCODE() == hrXlItemNotFound
+		}
+	}
+	return false
+}
 
 // Names is a collection of defined names — the Go equivalent of xlwings'
 // `Names`. Reached via Workbook.Names() (workbook scope) or
@@ -54,6 +90,15 @@ func (n *names) Contains(nameStr string) (bool, error) {
 		return false, err
 	}
 	// Excel's Names collection has no membership test; probing Item and
-	// checking the chain error is the canonical COM idiom.
-	return n.Call("Item", nameStr).Err() == nil, nil
+	// checking the chain error is the canonical COM idiom. A not-found miss is
+	// a clean (false, nil); any other COM failure (disconnected server, access
+	// denied, …) must not be masqueraded as "absent" — propagate it.
+	err := n.Call("Item", nameStr).Err()
+	if err == nil {
+		return true, nil
+	}
+	if isNameNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }

@@ -3,6 +3,8 @@
 package excel
 
 import (
+	"fmt"
+
 	"github.com/xll-gen/sugar"
 )
 
@@ -78,10 +80,18 @@ type worksheet struct {
 func wrapWorksheet(c sugar.Chain) Worksheet { return &worksheet{c} }
 
 func (w *worksheet) Range(cell1 interface{}, cell2 ...interface{}) Range {
-	if len(cell2) > 0 {
+	// COM Range(Cell1, [Cell2]) takes at most two anchors. Silently dropping
+	// cell2[1:] would hide a caller bug (e.g. Range("A1", "B2", "C3")); surface
+	// it as a chain error instead.
+	switch len(cell2) {
+	case 0:
+		return wrapRange(w.Get("Range", cell1))
+	case 1:
 		return wrapRange(w.Get("Range", cell1, cell2[0]))
+	default:
+		return wrapRange(sugar.Error(fmt.Errorf(
+			"excel: Range accepts at most 2 cell arguments, got %d", 1+len(cell2))))
 	}
-	return wrapRange(w.Get("Range", cell1))
 }
 
 func (w *worksheet) Cells(row, col interface{}) Range {
