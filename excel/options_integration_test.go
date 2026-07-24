@@ -265,6 +265,48 @@ func TestOptions_SetGetStructRoundTrip(t *testing.T) {
 	})
 }
 
+// TestOptions_ExpandDeferredReevaluation is the regression for the eager-Expand
+// bug: xlwings evaluates options only on value access, so a stored
+// OptionedRange must re-discover the current data block on every read. We
+// capture an OptionedRange over a 3-row column, then grow the column, then read
+// again — the second read must include the new rows. Before the fix, Options()
+// snapshotted the expanded address at construction time and the second read
+// returned only the original 3 rows.
+func TestOptions_ExpandDeferredReevaluation(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue(1.0)
+		sheet.Range("A2").SetValue(2.0)
+		sheet.Range("A3").SetValue(3.0)
+
+		// Capture the OptionedRange BEFORE growing the data.
+		opt := sheet.Range("A1").Options(excel.Expand("down"))
+
+		// First read: 3 rows.
+		v, err := opt.Value()
+		if err != nil {
+			t.Fatalf("first Value(): %v", err)
+		}
+		if got, want := v, []interface{}{1.0, 2.0, 3.0}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("first read: got %v, want %v", got, want)
+		}
+
+		// Grow the block.
+		sheet.Range("A4").SetValue(4.0)
+		sheet.Range("A5").SetValue(5.0)
+
+		// Second read on the SAME OptionedRange must re-evaluate the expand and
+		// include the new rows.
+		v, err = opt.Value()
+		if err != nil {
+			t.Fatalf("second Value(): %v", err)
+		}
+		want := []interface{}{1.0, 2.0, 3.0, 4.0, 5.0}
+		if !reflect.DeepEqual(v, want) {
+			t.Errorf("second read did not re-evaluate expand: got %v, want %v", v, want)
+		}
+	})
+}
+
 // TestOptions_EmptyReplacement validates that Empty(value) substitutes nil
 // cells in the raw read.
 func TestOptions_EmptyReplacement(t *testing.T) {

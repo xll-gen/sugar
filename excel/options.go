@@ -214,17 +214,38 @@ func (r *excelRange) Options(opts ...RangeOption) OptionedRange {
 		fn(&o)
 	}
 	or := &optionedRange{rng: r, opts: o}
-	// Resolve Expand eagerly so the user sees a configuration error before
-	// the eventual Value() call. The expanded range replaces r in or.rng.
-	if o.expand != "" {
-		expanded, err := applyExpand(r, o.expand)
-		if err != nil {
-			or.err = err
-		} else {
-			or.rng = expanded
-		}
+	// Validate the Expand direction eagerly (a config typo surfaces before the
+	// read), but DEFER the actual expansion to Value()/Get(). xlwings evaluates
+	// options only on value access, so a stored OptionedRange re-discovers the
+	// current data block on every read — a range that grows after Options() is
+	// captured must include the new rows/columns. See effectiveRange.
+	if o.expand != "" && !validExpandDirection(o.expand) {
+		or.err = fmt.Errorf("Expand: unsupported direction %q (use \"table\", \"down\", or \"right\")", o.expand)
 	}
 	return or
+}
+
+// validExpandDirection reports whether s is one of the supported Expand
+// directions. Used by Options() for early validation without running the
+// (deferred) expansion.
+func validExpandDirection(s string) bool {
+	switch s {
+	case "table", "down", "right":
+		return true
+	}
+	return false
+}
+
+// effectiveRange resolves the range to read from. When an Expand direction is
+// configured, applyExpand is re-run here — at read time — so each Value()/Get()
+// sees the current extent of the data block (xlwings' "options are only
+// evaluated when accessing the values" semantics). Without Expand it returns
+// the original anchor range unchanged.
+func (o *optionedRange) effectiveRange() (Range, error) {
+	if o.opts.expand == "" {
+		return o.rng, nil
+	}
+	return applyExpand(o.rng, o.opts.expand)
 }
 
 // applyExpand walks the COM `Range.End(direction)` chain to grow `anchor`
@@ -351,7 +372,11 @@ func (o *optionedRange) Value() (interface{}, error) {
 	if o.err != nil {
 		return nil, o.err
 	}
-	raw, err := readGrid(o.rng)
+	rng, err := o.effectiveRange()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := readGrid(rng)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +403,11 @@ func (o *optionedRange) Get(dst interface{}) error {
 	if dv.Kind() != reflect.Ptr || dv.IsNil() {
 		return fmt.Errorf("Options.Get: destination must be a non-nil pointer, got %T", dst)
 	}
-	raw, err := readGrid(o.rng)
+	rng, err := o.effectiveRange()
+	if err != nil {
+		return err
+	}
+	raw, err := readGrid(rng)
 	if err != nil {
 		return err
 	}

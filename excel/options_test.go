@@ -14,6 +14,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/xll-gen/sugar"
 )
 
 // TestShapeResult_Auto verifies the default xlwings shape rules: 1×1 unwraps
@@ -81,6 +83,36 @@ func TestShapeResult_Grid(t *testing.T) {
 	}
 	if _, ok := got.([][]interface{}); !ok {
 		t.Errorf("Grid: got %T, want [][]interface{}", got)
+	}
+}
+
+// TestValidExpandDirection covers the direction validator used for the early
+// Options() error (the expansion itself is deferred to read time).
+func TestValidExpandDirection(t *testing.T) {
+	for _, ok := range []string{"table", "down", "right"} {
+		if !validExpandDirection(ok) {
+			t.Errorf("validExpandDirection(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", "up", "left", "sideways", "TABLE"} {
+		if validExpandDirection(bad) {
+			t.Errorf("validExpandDirection(%q) = true, want false", bad)
+		}
+	}
+}
+
+// TestOptions_ExpandBadDirection confirms an invalid Expand direction is
+// reported eagerly through Err() (Excel-free: Options() validates the string
+// but never touches COM — the actual expansion is deferred to Value()/Get()).
+func TestOptions_ExpandBadDirection(t *testing.T) {
+	r := &excelRange{sugar.Error(nil)}
+	or := r.Options(Expand("sideways"))
+	if or.Err() == nil {
+		t.Error("Options(Expand(\"sideways\")).Err() = nil, want a direction error")
+	}
+	// A valid direction must NOT set an eager error.
+	if err := r.Options(Expand("down")).Err(); err != nil {
+		t.Errorf("Options(Expand(\"down\")).Err() = %v, want nil (expansion deferred)", err)
 	}
 }
 
