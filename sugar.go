@@ -175,6 +175,39 @@ func (c *chain) handleResult(result *ole.VARIANT, err error) Chain {
 		return newChain
 	}
 
+	if result.VT == ole.VT_UNKNOWN {
+		// A bare IUnknown result. Promote it to a dispatch chain by querying
+		// for IDispatch — the same resolution ForEach applies to VT_UNKNOWN
+		// collection items. Without this the VARIANT would fall through to the
+		// value branch below, and Value() would hand the caller the raw
+		// interface pointer with no AddRef (a use-after-free once Release
+		// Clears the VARIANT) while Store() — which needs a live disp — could
+		// not recover it at all.
+		var newDisp *ole.IDispatch
+		if unk := result.ToIUnknown(); unk != nil {
+			if d, qiErr := unk.QueryInterface(ole.IID_IDispatch); qiErr == nil {
+				newDisp = d // QueryInterface returns a freshly AddRef'd ref.
+			}
+		}
+		// Release the enum/result's own IUnknown reference: we either hold an
+		// independent IDispatch ref now, or the object is unusable as a chain.
+		result.Clear()
+		if newDisp == nil {
+			// Not IDispatch-capable (e.g. a raw IEnumVARIANT). There is nothing
+			// a Chain can drive, so degrade to an empty chain — mirroring the
+			// COM `Nothing` convention above.
+			return &chain{ctx: c.ctx}
+		}
+		newChain := &chain{
+			disp: newDisp,
+			ctx:  c.ctx,
+		}
+		if c.ctx != nil {
+			c.ctx.Track(newChain)
+		}
+		return newChain
+	}
+
 	// Value result: no IDispatch ownership. The new chain carries only the
 	// VARIANT; sharing parent's disp here would let Release() double-free it.
 	// The chain is still tracked: VT_BSTR (and other allocating) VARIANTs
@@ -353,9 +386,17 @@ func (c *chain) Put(prop string, params ...interface{}) Chain {
 		return &chain{err: err, ctx: c.ctx}
 	}
 	defer cleanup()
-	_, err = invokeGuarded(func() (*ole.VARIANT, error) {
+	v, err := invokeGuarded(func() (*ole.VARIANT, error) {
 		return oleutil.PutProperty(c.disp, prop, args...)
 	})
+	// PutProperty returns the propput call's VARIANT result. It is usually
+	// VT_EMPTY, but a server is free to hand back an allocating type (BSTR,
+	// SAFEARRAY, object) — Put has no chain to own it, so clear it here rather
+	// than leak. Cleared on the error path too (a partial VARIANT may still be
+	// allocated).
+	if v != nil {
+		v.Clear()
+	}
 	if err != nil {
 		return &chain{err: err, ctx: c.ctx}
 	}
@@ -517,9 +558,17 @@ func (c *chain) Release() error {
 	return err
 }
 
-// IsDispatch returns true if the last result is a dispatch object.
+// IsDispatch reports whether the chain currently references a COM object.
+//
+// This is true both when the chain holds a live IDispatch directly (from
+// From, Create, Fork, or a ForEach item — none of which set lastResult) and
+// when the last Get/Call produced a VT_DISPATCH result. Earlier versions only
+// inspected lastResult, so a chain built via From/Fork/ForEach reported false
+// even though it plainly wrapped an object. A COM `Nothing` or a scalar value
+// chain still reports false: those have both disp==nil and a non-dispatch (or
+// absent) lastResult.
 func (c *chain) IsDispatch() bool {
-	return c.lastResult != nil && c.lastResult.VT == ole.VT_DISPATCH
+	return c.disp != nil || (c.lastResult != nil && c.lastResult.VT == ole.VT_DISPATCH)
 }
 
 // Value retrieves the Go value of the last operation result.
@@ -546,6 +595,14 @@ func (c *chain) Value() (interface{}, error) {
 	}
 	if c.lastResult.VT == ole.VT_DISPATCH {
 		return nil, errors.New("result is IDispatch, use Store")
+	}
+	if c.lastResult.VT == ole.VT_UNKNOWN {
+		// A raw IUnknown that reached here bypassed handleResult's promotion
+		// path (e.g. a VARIANT set directly by a caller). Returning it would
+		// hand back the interface pointer without an AddRef, dangling once the
+		// arena Clears the VARIANT. Demote to nil, matching getElement's
+		// object-cell convention (an IUnknown is not a representable Go value).
+		return nil, nil
 	}
 	if c.lastResult.VT&ole.VT_ARRAY != 0 {
 		return decodeVariantArray(c.lastResult)
