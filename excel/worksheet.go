@@ -155,12 +155,18 @@ func (w *worksheet) Delete() error {
 	return w.Call("Delete").Err()
 }
 
+// Clear/ClearContents operate on the sheet's full cell range. Worksheet.Cells
+// is a COM *property* (propget with no arguments), so it must be read with Get:
+// invoking it with Call (DISPATCH_METHOD) raises DISP_E_MEMBERNOTFOUND and both
+// methods fail unconditionally. Clear/ClearContents on the resulting Range are
+// real methods, hence Call — see dispatch_kind_test.go for the member-kind
+// registry that pins this distinction.
 func (w *worksheet) Clear() error {
-	return w.Call("Cells").Call("Clear").Err()
+	return w.Get("Cells").Call("Clear").Err()
 }
 
 func (w *worksheet) ClearContents() error {
-	return w.Call("Cells").Call("ClearContents").Err()
+	return w.Get("Cells").Call("ClearContents").Err()
 }
 
 func (w *worksheet) AutoFit() error {

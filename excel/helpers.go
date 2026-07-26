@@ -74,14 +74,52 @@ func getBool(c sugar.Chain, prop string, params ...interface{}) (bool, error) {
 }
 
 // getString reads a string scalar COM property off a chain and coerces it
-// through toString. Generic form of the Name/Address/Formula/Path getter
-// pattern.
+// through stringFromVariant. Generic form of the Name/Address/Formula/Path
+// getter pattern.
 func getString(c sugar.Chain, prop string, params ...interface{}) (string, error) {
 	v, err := c.Get(prop, params...).Value()
 	if err != nil {
 		return "", err
 	}
+	return stringFromVariant(prop, v)
+}
+
+// stringFromVariant converts a decoded VARIANT to the Go string a scalar
+// string-property getter promises, rejecting the one shape that has no string
+// form: a SAFEARRAY.
+//
+// Excel returns an array from a *scalar* string property whenever the source
+// object spans more than one cell — Range("A1:B1").Formula on a multi-cell
+// range decodes to [][]interface{}. Running that through fmt.Sprint fabricated
+// Go-syntax text ("[[=1+1 =2+2]]") and handed it back as if it were a real
+// Excel value, so callers silently stored or re-wrote garbage. No Excel string
+// property can legitimately be a slice, so the guard has no false positives:
+// arrays become an explicit error instead of a forged string.
+func stringFromVariant(prop string, v interface{}) (string, error) {
+	if rows, cols, isArray := variantArrayShape(v); isArray {
+		return "", fmt.Errorf(
+			"excel: %s returned a %dx%d array, not a string: the object spans "+
+				"multiple cells — narrow it to one cell or read the block with Value()",
+			prop, rows, cols)
+	}
 	return toString(v), nil
+}
+
+// variantArrayShape reports whether a decoded VARIANT is a SAFEARRAY and, if
+// so, its [rows][cols] shape. It matches the two shapes sugar's VARIANT decoder
+// produces (safearray.go: 1-D -> []interface{}, 2-D -> [][]interface{}); a 1-D
+// array is reported as a single row. Any other Go type is a scalar.
+func variantArrayShape(v interface{}) (rows, cols int, isArray bool) {
+	switch a := v.(type) {
+	case [][]interface{}:
+		if len(a) > 0 {
+			cols = len(a[0])
+		}
+		return len(a), cols, true
+	case []interface{}:
+		return 1, len(a), true
+	}
+	return 0, 0, false
 }
 
 // toInt32 narrows the variety of integer types Excel COM can hand back into a
@@ -160,6 +198,9 @@ func toBool(v interface{}) bool {
 // toString coerces any VARIANT scalar value to a Go string, formatting
 // numbers/bools via fmt when the COM property is documented as string but
 // occasionally arrives typed (e.g. Application.Version on some hosts).
+//
+// Only scalars reach here: stringFromVariant rejects SAFEARRAY results first,
+// because fmt.Sprint on a slice produces Go syntax, never an Excel value.
 func toString(v interface{}) string {
 	if v == nil {
 		return ""

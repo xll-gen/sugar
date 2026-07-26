@@ -12,6 +12,7 @@ package excel_test
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/xll-gen/sugar"
@@ -210,6 +211,136 @@ func TestRange_Find(t *testing.T) {
 		_, found, err = sheet.Range("A1", "B2").Find("no_such_value")
 		if err != nil || found {
 			t.Errorf("Find(miss): found=%v err=%v; want clean miss", found, err)
+		}
+	})
+}
+
+// XlFindLookIn / XlLookAt / XlSearchOrder values used to deliberately poison
+// Excel's session-wide Find state from the raw chain.
+const (
+	xlValuesConst    int32 = -4163
+	xlWholeConst     int32 = 1
+	xlByColumnsConst int32 = 2
+)
+
+// TestRange_FindIgnoresSessionSearchState pins the Find determinism fix.
+//
+// Excel saves LookIn, LookAt, SearchOrder and MatchByte for the lifetime of
+// the Excel session every time Find runs, so a Find that omits them inherits
+// the previous search instead of using a default. Here an earlier raw Find
+// sets LookAt=xlWhole / LookIn=xlValues, and the typed Find must still behave
+// as documented (substring match over formulas). Before the fix both
+// assertions failed with found=false.
+func TestRange_FindIgnoresSessionSearchState(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		if err := sheet.Range("A1", "B2").SetValue([][]interface{}{
+			{"alpha", "beta"},
+			{"gamma", "delta"},
+		}).Err(); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := sheet.Range("C1").SetFormula("=1+1").Err(); err != nil {
+			t.Fatalf("seed formula: %v", err)
+		}
+
+		// poison sets the session-wide search state to the opposite of every
+		// value the typed Find pins. Find(What, After, LookIn, LookAt,
+		// SearchOrder) — the settings stick even for a search that misses.
+		poison := func() {
+			t.Helper()
+			err := sheet.UsedRange().Call("Find",
+				"alpha", sugar.Missing(), xlValuesConst, xlWholeConst, xlByColumnsConst,
+			).Err()
+			if err != nil {
+				t.Fatalf("poisoning the session Find state failed: %v", err)
+			}
+		}
+
+		// 1. LookAt: "amm" is a substring of "gamma". Inheriting xlWhole makes
+		//    this a miss; the pinned xlPart makes it a hit.
+		poison()
+		cell, found, err := sheet.Range("A1", "B2").Find("amm")
+		if err != nil || !found {
+			t.Fatalf("Find(amm) after xlWhole was persisted: found=%v err=%v; want a partial-match hit", found, err)
+		}
+		if addr, err := cell.Address(); err != nil || addr != "$A$2" {
+			t.Errorf("Find(amm) address: got %q err=%v; want $A$2", addr, err)
+		}
+
+		// 2. LookIn: C1 displays 2 but its formula text is "=1+1". Inheriting
+		//    xlValues makes this a miss; the pinned xlFormulas makes it a hit.
+		poison()
+		cell, found, err = sheet.UsedRange().Find("1+1")
+		if err != nil || !found {
+			t.Fatalf("Find(1+1) after xlValues was persisted: found=%v err=%v; want a formula-text hit", found, err)
+		}
+		if addr, err := cell.Address(); err != nil || addr != "$C$1" {
+			t.Errorf("Find(1+1) address: got %q err=%v; want $C$1", addr, err)
+		}
+	})
+}
+
+// TestRange_FindArgumentSlots guards the positional hazard in Find's COM
+// signature: MatchCase sits between SearchDirection and MatchByte, so a naive
+// argument list slides MatchByte into the SearchDirection slot. With the slots
+// correct, a plain forward search returns the first match in row order (A2
+// before B1); a value landing in SearchDirection would search backwards or
+// raise a type error instead.
+func TestRange_FindArgumentSlots(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		if err := sheet.Range("A1", "B2").SetValue([][]interface{}{
+			{"x", "hit"},
+			{"hit", "y"},
+		}).Err(); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		// By rows from the top-left: A1(x), B1(hit) -> the forward (xlNext)
+		// answer is B1. Backwards it would be A2.
+		cell, found, err := sheet.Range("A1", "B2").Find("hit")
+		if err != nil || !found {
+			t.Fatalf("Find(hit): found=%v err=%v; want a hit", found, err)
+		}
+		addr, err := cell.Address()
+		if err != nil {
+			t.Fatalf("Address: %v", err)
+		}
+		if addr != "$B$1" {
+			t.Errorf("Find(hit) = %s; want $B$1 (forward, by rows) — a wrong "+
+				"SearchDirection/SearchOrder slot would give $A$2", addr)
+		}
+	})
+}
+
+// TestRange_FormulaMultiCellErrors pins the getString fix against live Excel:
+// Formula on a multi-cell range really does come back as a SAFEARRAY, and it
+// must now be an error instead of the forged string "[[=1+1 =2+2]]".
+func TestRange_FormulaMultiCellErrors(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		if err := sheet.Range("A1").SetFormula("=1+1").Err(); err != nil {
+			t.Fatalf("seed A1: %v", err)
+		}
+		if err := sheet.Range("B1").SetFormula("=2+2").Err(); err != nil {
+			t.Fatalf("seed B1: %v", err)
+		}
+
+		// Single cell still works.
+		got, err := sheet.Range("A1").Formula()
+		if err != nil || got != "=1+1" {
+			t.Errorf("single-cell Formula: got %q err=%v; want =1+1", got, err)
+		}
+
+		got, err = sheet.Range("A1", "B1").Formula()
+		if err == nil {
+			t.Fatalf("multi-cell Formula returned %q with no error; want an explicit array error", got)
+		}
+		if got != "" {
+			t.Errorf("multi-cell Formula value = %q; want the empty string on the error path", got)
+		}
+		if strings.Contains(err.Error(), "[[") {
+			t.Errorf("error %q leaks the fabricated Go-syntax rendering", err)
+		}
+		if !strings.Contains(err.Error(), "Formula") {
+			t.Errorf("error %q should name the property", err)
 		}
 	})
 }

@@ -15,6 +15,20 @@ const (
 	xlShiftToRight int32 = -4161
 )
 
+// Search constants for Range.Find. Excel *persists* LookIn, LookAt,
+// SearchOrder and MatchByte across the whole Excel session (they are the Find
+// dialog's sticky state), so any Find that omits them inherits whatever the
+// user — or an unrelated add-in, macro, or earlier sugar call — last used.
+// These are the values a pristine Excel session starts with, i.e. the Find
+// dialog's factory defaults; passing them explicitly makes Find deterministic
+// without changing the behavior a fresh session already had.
+const (
+	xlFormulas int32 = -4123 // XlFindLookIn.xlFormulas — Find dialog "Look in: Formulas"
+	xlPart     int32 = 2     // XlLookAt.xlPart — "Match entire cell contents" off
+	xlByRows   int32 = 1     // XlSearchOrder.xlByRows — "Search: By Rows"
+	xlNext     int32 = 1     // XlSearchDirection.xlNext — forward search (per-call default)
+)
+
 // Range is a cell, row, column, or selection of cells — the Go equivalent of
 // xlwings' `Range`.
 //
@@ -131,6 +145,12 @@ type Range interface {
 	// Find searches the range for a value (Excel's Ctrl+F semantics, match
 	// on any part of the cell). found is false when nothing matches —
 	// Excel's COM Find returns Nothing in that case, not an error.
+	//
+	// The search parameters Excel persists per session (LookIn, LookAt,
+	// SearchOrder, MatchByte) are passed explicitly, so the result never
+	// depends on what the user or another add-in last searched for. sugar
+	// extension: xlwings has no Range.find, so there is no xlwings default
+	// to mirror; the pinned values are Excel's own fresh-session defaults.
 	Find(what string) (cell Range, found bool, err error)
 
 	// Merge merges all cells in the range into one.
@@ -314,8 +334,46 @@ func (r *excelRange) Insert(shift string) error {
 	}
 }
 
+// Find searches with an explicit, session-independent parameter set.
+//
+// Excel's COM signature is
+//
+//	Find(What, After, LookIn, LookAt, SearchOrder, SearchDirection,
+//	     MatchCase, MatchByte, SearchFormat)
+//
+// and the LookIn / LookAt / SearchOrder / MatchByte arguments are saved by
+// Excel each time Find (or the Find dialog) runs, for the lifetime of the
+// Excel session. Omitting them therefore does not mean "use the default": it
+// means "inherit whatever ran last", so the same sugar call could match on
+// whole cells in one session and on substrings in another. We pin all four to
+// the pristine-session values (xlFormulas / xlPart / xlByRows / MatchByte
+// False), which is also what the documented "Ctrl+F, match on any part of the
+// cell" semantics require.
+//
+// SearchDirection and MatchCase are *not* persisted (Excel applies xlNext and
+// False per call), yet we pass them anyway. Measured against Excel, supplying
+// the DISP_E_PARAMNOTFOUND omitted-parameter marker in the SearchDirection slot
+// fails with DISP_E_TYPEMISMATCH — that slot is typed XlSearchDirection (an
+// enum, VT_I4), not a plain optional VARIANT, so the marker is not a legal
+// value there. MatchCase/MatchByte are plain optional VARIANTs and would
+// probably tolerate the marker, but passing all six is the safer shape: it
+// keeps every argument in its own slot, so no future edit can slide MatchByte
+// into the SearchDirection slot and silently search backwards. SearchFormat is
+// a genuine trailing optional and stays omitted.
+//
+// For a search that needs other settings (values instead of formulas,
+// case-sensitive, backwards) use the raw chain: rng.Call("Find", ...).
 func (r *excelRange) Find(what string) (Range, bool, error) {
-	ch := r.Call("Find", what)
+	ch := r.Call("Find",
+		what,            // What
+		sugar.Missing(), // After           (defaults to the top-left cell)
+		xlFormulas,      // LookIn          (persisted -> pinned)
+		xlPart,          // LookAt          (persisted -> pinned)
+		xlByRows,        // SearchOrder     (persisted -> pinned)
+		xlNext,          // SearchDirection (per-call default, must be explicit)
+		false,           // MatchCase       (per-call default, must be explicit)
+		false,           // MatchByte       (persisted -> pinned)
+	)
 	if err := ch.Err(); err != nil {
 		return nil, false, err
 	}
