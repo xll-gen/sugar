@@ -101,6 +101,69 @@ func TestRange_SetValue2D(t *testing.T) {
 	})
 }
 
+// TestRange_LargeGridRoundTrip is the live-Excel anchor for the bulk
+// SAFEARRAY encode/decode paths (sugar's `SafeArrayAccessData` fast path,
+// which walks the element buffer directly instead of calling
+// SafeArrayGetElement/PutElement per cell).
+//
+// The grid is deliberately **asymmetric** (rows != cols) and every cell holds
+// a value that encodes its own coordinates, so a row/column transposition —
+// the failure mode of getting the column-major element order wrong — cannot
+// hide behind a symmetric shape or repeated values. It is also large enough
+// (200x37 = 7400 cells) that the block crosses the Excel process boundary as
+// one real marshaled SAFEARRAY rather than a handful of cells, and it mixes
+// every cell type the encoder supports (float, string, bool, blank).
+func TestRange_LargeGridRoundTrip(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		const rows, cols = 200, 37
+		want := make([][]interface{}, rows)
+		for r := range want {
+			row := make([]interface{}, cols)
+			for c := range row {
+				switch (r + c) % 4 {
+				case 0:
+					row[c] = float64(r)*1000 + float64(c)
+				case 1:
+					row[c] = fmt.Sprintf("r%dc%d", r, c)
+				case 2:
+					row[c] = (r+c)%8 == 2
+				case 3:
+					row[c] = nil // blank cell
+				}
+			}
+			want[r] = row
+		}
+
+		rng := sheet.Range("A1").Resize(rows, cols)
+		if err := rng.SetValue(want).Err(); err != nil {
+			t.Fatalf("SetValue(%dx%d): %v", rows, cols, err)
+		}
+
+		out, err := sheet.Range("A1").Resize(rows, cols).Value()
+		if err != nil {
+			t.Fatalf("Value(): %v", err)
+		}
+		got, ok := out.([][]interface{})
+		if !ok {
+			t.Fatalf("Value() returned %T, want [][]interface{}", out)
+		}
+		if len(got) != rows {
+			t.Fatalf("got %d rows, want %d (a transposed decode would give %d)", len(got), rows, cols)
+		}
+		for r := range got {
+			if len(got[r]) != cols {
+				t.Fatalf("row %d has %d columns, want %d", r, len(got[r]), cols)
+			}
+			for c := range got[r] {
+				if !reflect.DeepEqual(got[r][c], want[r][c]) {
+					t.Fatalf("cell (%d,%d) = %v (%T), want %v (%T)",
+						r, c, got[r][c], got[r][c], want[r][c], want[r][c])
+				}
+			}
+		}
+	})
+}
+
 // TestRange_End covers the Ctrl+Arrow navigation primitive in all four
 // directions plus the invalid-direction error path.
 func TestRange_End(t *testing.T) {

@@ -7,6 +7,7 @@
 package sugar
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -359,6 +360,339 @@ func TestCellError_String(t *testing.T) {
 	// Unknown code falls back to the hex form.
 	if got := (CellError{SCode: 0xDEADBEEF}).String(); got != "#ERR(0xDEADBEEF)" {
 		t.Errorf("unknown CellError.String() = %q, want #ERR(0xDEADBEEF)", got)
+	}
+}
+
+// TestSafeArrayDataLayout pins the assumption the bulk encode/decode paths are
+// built on: a SAFEARRAY's element buffer is **column-major** — the dimension-1
+// index (rows, for the `[row][col]` arrays Excel returns) varies fastest, so
+// cell (r, c) of a rows x cols array sits at linear offset `c*rows + r`.
+//
+// Getting this backwards transposes every multi-cell Range read and write, and
+// the transposition is invisible on square grids — hence an asymmetric 2x3.
+// The elemsize check guards the second assumption: that go-ole's VARIANT struct
+// is ABI-identical to the native one, so the COM buffer can be aliased as a
+// []ole.VARIANT.
+func TestSafeArrayDataLayout(t *testing.T) {
+	const rows, cols = 2, 3
+	sa, err := createVariantSafeArray([]safeArrayBound{
+		{cElements: rows, lLbound: 0},
+		{cElements: cols, lLbound: 0},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer procSafeArrayDestroy.Call(sa)
+
+	// Write through the OS's own index arithmetic.
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			if err := putElement(sa, []int32{int32(r), int32(c)}, float64(10*r+c)); err != nil {
+				t.Fatalf("putElement(%d,%d): %v", r, c, err)
+			}
+		}
+	}
+
+	if size, _, _ := procSafeArrayGetElemsize.Call(sa); size != uintptr(variantSize) {
+		t.Fatalf("SafeArrayGetElemsize = %d, but sizeof(ole.VARIANT) = %d — the COM buffer cannot be aliased as []ole.VARIANT", size, variantSize)
+	}
+
+	cells, unlock, err := accessVariantData(sa, rows*cols)
+	if err != nil {
+		t.Fatalf("accessVariantData: %v", err)
+	}
+	defer unlock()
+
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			got := cells[c*rows+r].Value()
+			if want := float64(10*r + c); got != want {
+				t.Errorf("linear[%d] (c*rows+r for r=%d,c=%d) = %v, want %v — SAFEARRAY layout is not column-major",
+					c*rows+r, r, c, got, want)
+			}
+		}
+	}
+}
+
+// TestAccessVariantData_RejectsTypedArray covers the element-size guard: a
+// typed (non-VT_VARIANT) SAFEARRAY has a different element width, so aliasing
+// its buffer as []ole.VARIANT would read garbage. accessVariantData must refuse
+// so the caller falls back to the per-element API instead.
+func TestAccessVariantData_RejectsTypedArray(t *testing.T) {
+	bounds := []safeArrayBound{{cElements: 4, lLbound: 0}}
+	sa, _, _ := procSafeArrayCreate.Call(
+		uintptr(ole.VT_R8), // 8-byte elements, not sizeof(VARIANT)
+		uintptr(uint32(1)),
+		uintptr(unsafe.Pointer(&bounds[0])),
+	)
+	if sa == 0 {
+		t.Fatal("SafeArrayCreate(VT_R8) failed")
+	}
+	defer procSafeArrayDestroy.Call(sa)
+
+	cells, unlock, err := accessVariantData(sa, 4)
+	if err == nil {
+		unlock()
+		t.Fatalf("expected an element-size error for a VT_R8 array, got %d cells", len(cells))
+	}
+}
+
+// bulkGrid is the shared fixture for the bulk-vs-per-element cross-checks: an
+// asymmetric grid mixing every cell type the encoder supports.
+func bulkGrid(rows, cols int) [][]interface{} {
+	g := make([][]interface{}, rows)
+	for r := range g {
+		row := make([]interface{}, cols)
+		for c := range row {
+			switch (r + c) % 4 {
+			case 0:
+				row[c] = float64(r)*1000 + float64(c)
+			case 1:
+				row[c] = fmt.Sprintf("s(%d,%d)", r, c)
+			case 2:
+				row[c] = (r+c)%8 == 2
+			case 3:
+				row[c] = nil
+			}
+		}
+		g[r] = row
+	}
+	return g
+}
+
+// mustCreate allocates a rows x cols VT_VARIANT SAFEARRAY for a test.
+func mustCreate(t *testing.T, rows, cols int) uintptr {
+	t.Helper()
+	sa, err := createVariantSafeArray([]safeArrayBound{
+		{cElements: uint32(rows)},
+		{cElements: uint32(cols)},
+	})
+	if err != nil {
+		t.Fatalf("createVariantSafeArray(%dx%d): %v", rows, cols, err)
+	}
+	return sa
+}
+
+// readPerElement reads a grid back through oleaut32's SafeArrayGetElement.
+func readPerElement(t *testing.T, sa uintptr, rows, cols int) [][]interface{} {
+	t.Helper()
+	out := make([][]interface{}, rows)
+	for r := 0; r < rows; r++ {
+		out[r] = make([]interface{}, cols)
+		for c := 0; c < cols; c++ {
+			v, err := getElement(sa, []int32{int32(r), int32(c)})
+			if err != nil {
+				t.Fatalf("getElement(%d,%d): %v", r, c, err)
+			}
+			out[r][c] = v
+		}
+	}
+	return out
+}
+
+// viaPerElement round-trips src entirely through the per-element API, giving
+// the reference grid the bulk paths must reproduce.
+func viaPerElement(t *testing.T, src [][]interface{}, rows, cols int) [][]interface{} {
+	t.Helper()
+	sa := mustCreate(t, rows, cols)
+	defer procSafeArrayDestroy.Call(sa)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			if err := putElement(sa, []int32{int32(r), int32(c)}, src[r][c]); err != nil {
+				t.Fatalf("putElement(%d,%d): %v", r, c, err)
+			}
+		}
+	}
+	return readPerElement(t, sa, rows, cols)
+}
+
+// TestBulkMatchesPerElement is the correctness anchor for the
+// SafeArrayAccessData fast paths: for every shape, the bulk encode+decode must
+// produce byte-for-byte the same grid as the SafeArrayGetElement /
+// SafeArrayPutElement paths, which use oleaut32's own index arithmetic rather
+// than sugar's `c*rows + r`.
+//
+// Both mixed directions are checked (bulk-write/slow-read and
+// slow-write/bulk-read), so a transposition in either path is caught even
+// though a matched pair of transposes would cancel out.
+func TestBulkMatchesPerElement(t *testing.T) {
+	shapes := [][2]int{{1, 1}, {1, 7}, {7, 1}, {2, 3}, {3, 2}, {5, 9}, {64, 33}}
+	for _, s := range shapes {
+		rows, cols := s[0], s[1]
+		name := fmt.Sprintf("%dx%d", rows, cols)
+		src := bulkGrid(rows, cols)
+
+		// Reference: write and read entirely through the per-element API.
+		ref := viaPerElement(t, src, rows, cols)
+
+		// 1. bulk write -> per-element read.
+		bulkSA := mustCreate(t, rows, cols)
+		if err := fill2D(bulkSA, src, rows, cols); err != nil {
+			t.Fatalf("%s: fill2D: %v", name, err)
+		}
+		gotSlowRead := readPerElement(t, bulkSA, rows, cols)
+		procSafeArrayDestroy.Call(bulkSA)
+		if !reflect.DeepEqual(gotSlowRead, ref) {
+			t.Errorf("%s: bulk write + per-element read = %v, want %v", name, gotSlowRead, ref)
+		}
+
+		// 2. per-element write -> bulk read.
+		slowSA := mustCreate(t, rows, cols)
+		for r := 0; r < rows; r++ {
+			for c := 0; c < cols; c++ {
+				if err := putElement(slowSA, []int32{int32(r), int32(c)}, src[r][c]); err != nil {
+					t.Fatalf("%s: putElement: %v", name, err)
+				}
+			}
+		}
+		gotBulkRead, err := decode2D(slowSA)
+		if err != nil {
+			t.Fatalf("%s: decode2D: %v", name, err)
+		}
+		if !reflect.DeepEqual(gotBulkRead, ref) {
+			t.Errorf("%s: per-element write + bulk read = %v, want %v", name, gotBulkRead, ref)
+		}
+		procSafeArrayDestroy.Call(slowSA)
+
+		// 3. the production path end to end.
+		v, err := encodeVariantArray(src)
+		if err != nil {
+			t.Fatalf("%s: encodeVariantArray: %v", name, err)
+		}
+		gotFull, err := decodeVariantArray(v)
+		if err != nil {
+			t.Fatalf("%s: decodeVariantArray: %v", name, err)
+		}
+		v.Clear()
+		if !reflect.DeepEqual(gotFull, ref) {
+			t.Errorf("%s: bulk round trip = %v, want %v", name, gotFull, ref)
+		}
+	}
+}
+
+// TestBulkMatchesPerElement1D is the 1-D twin of TestBulkMatchesPerElement.
+func TestBulkMatchesPerElement1D(t *testing.T) {
+	for _, n := range []int{1, 2, 17, 256} {
+		src := bulkGrid(1, n)[0]
+
+		slowSA, err := createVariantSafeArray([]safeArrayBound{{cElements: uint32(n)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, val := range src {
+			if err := putElement(slowSA, []int32{int32(i)}, val); err != nil {
+				t.Fatalf("n=%d: putElement: %v", n, err)
+			}
+		}
+		ref := make([]interface{}, n)
+		for i := range ref {
+			v, err := getElement(slowSA, []int32{int32(i)})
+			if err != nil {
+				t.Fatalf("n=%d: getElement: %v", n, err)
+			}
+			ref[i] = v
+		}
+		gotBulkRead, err := decode1D(slowSA)
+		if err != nil {
+			t.Fatalf("n=%d: decode1D: %v", n, err)
+		}
+		procSafeArrayDestroy.Call(slowSA)
+		if !reflect.DeepEqual(gotBulkRead, ref) {
+			t.Errorf("n=%d: bulk read = %v, want %v", n, gotBulkRead, ref)
+		}
+
+		bulkSA, err := createVariantSafeArray([]safeArrayBound{{cElements: uint32(n)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fill1D(bulkSA, src); err != nil {
+			t.Fatalf("n=%d: fill1D: %v", n, err)
+		}
+		for i := range ref {
+			got, err := getElement(bulkSA, []int32{int32(i)})
+			if err != nil {
+				t.Fatalf("n=%d: getElement: %v", n, err)
+			}
+			if !reflect.DeepEqual(got, ref[i]) {
+				t.Errorf("n=%d: bulk write cell %d = %v, want %v", n, i, got, ref[i])
+			}
+		}
+		procSafeArrayDestroy.Call(bulkSA)
+	}
+}
+
+// TestEncodeDecode_LargeGrid round-trips a grid big enough to cross every
+// interesting boundary of the bulk paths (multi-page data buffer, the shared
+// flat backing allocation decode2D slices per row) and asserts exact value
+// identity, not just shape.
+func TestEncodeDecode_LargeGrid(t *testing.T) {
+	const rows, cols = 257, 129 // asymmetric and coprime-ish, so a transpose shows
+	src := bulkGrid(rows, cols)
+
+	v, err := encodeVariantArray(src)
+	if err != nil {
+		t.Fatalf("encodeVariantArray: %v", err)
+	}
+	defer v.Clear()
+
+	out, err := decodeVariantArray(v)
+	if err != nil {
+		t.Fatalf("decodeVariantArray: %v", err)
+	}
+	grid, ok := out.([][]interface{})
+	if !ok {
+		t.Fatalf("decoded to %T, want [][]interface{}", out)
+	}
+	if len(grid) != rows {
+		t.Fatalf("got %d rows, want %d", len(grid), rows)
+	}
+	for r := range grid {
+		if len(grid[r]) != cols {
+			t.Fatalf("row %d has %d cols, want %d", r, len(grid[r]), cols)
+		}
+		for c := range grid[r] {
+			if !reflect.DeepEqual(grid[r][c], src[r][c]) {
+				t.Fatalf("cell (%d,%d) = %v (%T), want %v (%T)", r, c, grid[r][c], grid[r][c], src[r][c], src[r][c])
+			}
+		}
+	}
+}
+
+// TestEncodeDecode_Empty pins the zero-element edge of the bulk paths:
+// SafeArrayAccessData may hand back a nil data pointer for an empty array, and
+// accessVariantData must turn that into the (no-op) fallback rather than
+// aliasing nil.
+func TestEncodeDecode_Empty(t *testing.T) {
+	for _, in := range []interface{}{[]interface{}{}, [][]interface{}{}} {
+		v, err := encodeVariantArray(in)
+		if err != nil {
+			t.Fatalf("encodeVariantArray(%T{}): %v", in, err)
+		}
+		out, err := decodeVariantArray(v)
+		if err != nil {
+			t.Fatalf("decodeVariantArray(%T{}): %v", in, err)
+		}
+		v.Clear()
+		if rv := reflect.ValueOf(out); !rv.IsValid() || rv.Kind() != reflect.Slice || rv.Len() != 0 {
+			t.Errorf("%T{} round-tripped to %#v, want an empty slice", in, out)
+		}
+	}
+}
+
+// TestEncode_UnsupportedCellMidGridDestroys covers the bulk encode failure
+// path: an unsupported cell in the *middle* of a grid (after string cells have
+// already had their BSTRs handed to the array) must unlock the array before
+// SafeArrayDestroy runs, or the destroy fails with DISP_E_ARRAYISLOCKED and the
+// whole array leaks. A leaked lock is not directly observable, so this asserts
+// the reachable symptom: a clean error and no panic/crash, repeated enough to
+// make a leak visible under -race / heap growth.
+func TestEncode_UnsupportedCellMidGridDestroys(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		src := bulkGrid(8, 8)
+		src[5][5] = struct{ nope int }{}
+		if _, err := encodeVariantArray(src); err == nil {
+			t.Fatal("expected an error for an unsupported cell type")
+		}
 	}
 }
 

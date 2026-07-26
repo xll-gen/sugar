@@ -17,22 +17,97 @@ import (
 //
 // go-ole v1.3.0's `SafeArrayConversion.ToValueArray` is hard-wired to 1-D and
 // silently corrupts multi-dim arrays. Excel's `Range.Value` always returns a
-// 2-D `SAFEARRAY` of `VARIANT`, so we reach for `oleaut32.dll!SafeArrayGetElement`
-// directly with a properly shaped index array.
+// 2-D `SAFEARRAY` of `VARIANT`, so we drive `oleaut32.dll` directly.
+//
+// Bulk transfer is the default: `SafeArrayAccessData` locks the array once and
+// the whole grid is walked as a `[]ole.VARIANT` view over the element buffer.
+// The per-element `SafeArrayGetElement` / `SafeArrayPutElement` entry points
+// are kept as a fallback for the (unreachable in practice) case where the
+// array's element width is not `sizeof(VARIANT)`, and as the independent
+// reference the bulk paths are tested against. See the "Bulk element access"
+// block below for the layout and locking rules.
 
 var oleaut32 = syscall.NewLazyDLL("oleaut32.dll")
 
 var (
-	procSafeArrayGetDim     = oleaut32.NewProc("SafeArrayGetDim")
-	procSafeArrayGetLBound  = oleaut32.NewProc("SafeArrayGetLBound")
-	procSafeArrayGetUBound  = oleaut32.NewProc("SafeArrayGetUBound")
-	procSafeArrayGetElement = oleaut32.NewProc("SafeArrayGetElement")
-	procSafeArrayGetVartype = oleaut32.NewProc("SafeArrayGetVartype")
-	procSafeArrayCreate     = oleaut32.NewProc("SafeArrayCreate")
-	procSafeArrayPutElement = oleaut32.NewProc("SafeArrayPutElement")
-	procSafeArrayDestroy    = oleaut32.NewProc("SafeArrayDestroy")
-	procVarR8FromDec        = oleaut32.NewProc("VarR8FromDec")
+	procSafeArrayGetDim       = oleaut32.NewProc("SafeArrayGetDim")
+	procSafeArrayGetLBound    = oleaut32.NewProc("SafeArrayGetLBound")
+	procSafeArrayGetUBound    = oleaut32.NewProc("SafeArrayGetUBound")
+	procSafeArrayGetElement   = oleaut32.NewProc("SafeArrayGetElement")
+	procSafeArrayGetVartype   = oleaut32.NewProc("SafeArrayGetVartype")
+	procSafeArrayGetElemsize  = oleaut32.NewProc("SafeArrayGetElemsize")
+	procSafeArrayCreate       = oleaut32.NewProc("SafeArrayCreate")
+	procSafeArrayPutElement   = oleaut32.NewProc("SafeArrayPutElement")
+	procSafeArrayAccessData   = oleaut32.NewProc("SafeArrayAccessData")
+	procSafeArrayUnaccessData = oleaut32.NewProc("SafeArrayUnaccessData")
+	procSafeArrayDestroy      = oleaut32.NewProc("SafeArrayDestroy")
+	procVarR8FromDec          = oleaut32.NewProc("VarR8FromDec")
 )
+
+// variantSize is the byte width of a VARIANT as Go sees it (24 on amd64, 16 on
+// 386). accessVariantData cross-checks it against the SAFEARRAY's own element
+// size before aliasing the COM buffer as a []ole.VARIANT.
+const variantSize = unsafe.Sizeof(ole.VARIANT{})
+
+// Bulk element access.
+//
+// The per-element `SafeArrayGetElement` / `SafeArrayPutElement` APIs cost a
+// `syscall.LazyProc.Call` plus a VARIANT deep copy *per cell*, which dominates
+// the cost of reading or writing a large `Range.Value` block (measured: ~350 ns
+// per cell, i.e. ~90 ms for a 500x500 grid — about half of the end-to-end
+// `Range.Value()` time even across the process boundary). `SafeArrayAccessData`
+// locks the array once and hands back the raw element buffer, so the whole grid
+// is walked with plain memory access.
+//
+// # Data layout
+//
+// A SAFEARRAY's element buffer is column-major: the **first** index (the one
+// `SafeArrayGetLBound(psa, 1)` describes) varies fastest. For the 2-D
+// `[row][col]` arrays Excel uses — dimension 1 = rows, dimension 2 = columns —
+// the linear offset of cell (r, c) is therefore `c*rows + r`, **not**
+// `r*cols + c`. This is verified two ways: `TestSafeArrayDataLayout` asserts the
+// ordering directly against oleaut32, and `TestBulkMatchesPerElement`
+// cross-checks the bulk paths against the `SafeArrayGetElement`/`PutElement`
+// results (the OS's own index arithmetic) on asymmetric grids.
+//
+// # Locking contract
+//
+// Every successful `accessVariantData` returns an `unlock` closure that must
+// run before the array is destroyed — `SafeArrayDestroy` fails with
+// `DISP_E_ARRAYISLOCKED` on a locked array. Callers `defer unlock()` inside a
+// helper whose scope closes before any destroy in the caller.
+
+// accessVariantData locks a VT_VARIANT SAFEARRAY and returns its `n` elements
+// as a Go slice aliasing the COM-owned buffer, together with the matching
+// unlock function.
+//
+// The returned slice is a *view*: its VARIANTs are owned by the SAFEARRAY. Do
+// not Clear them on the read path (that would free the array's own BSTRs), and
+// on the write path storing a VARIANT transfers ownership of any BSTR it holds
+// to the array (destroyed later by SafeArrayDestroy / VariantClear).
+//
+// An element-size mismatch is reported as an error so the caller can fall back
+// to the per-element API rather than reinterpret a foreign layout.
+func accessVariantData(sa uintptr, n int) ([]ole.VARIANT, func(), error) {
+	size, _, _ := procSafeArrayGetElemsize.Call(sa)
+	if size != uintptr(variantSize) {
+		return nil, nil, fmt.Errorf("SafeArrayGetElemsize returned %d, want %d (VARIANT)", size, variantSize)
+	}
+	// Let oleaut32 write the element pointer straight into an unsafe.Pointer
+	// variable; a uintptr round-trip would be both a `go vet` violation and,
+	// in principle, a GC-invisible pointer.
+	var data unsafe.Pointer
+	hr, _, _ := procSafeArrayAccessData.Call(sa, uintptr(unsafe.Pointer(&data)))
+	if hr != 0 {
+		return nil, nil, fmt.Errorf("SafeArrayAccessData failed: 0x%x", hr)
+	}
+	if data == nil {
+		procSafeArrayUnaccessData.Call(sa)
+		return nil, nil, fmt.Errorf("SafeArrayAccessData returned a nil data pointer")
+	}
+	cells := unsafe.Slice((*ole.VARIANT)(data), n)
+	return cells, func() { procSafeArrayUnaccessData.Call(sa) }, nil
+}
 
 // decodeVariantArray turns a VARIANT carrying `VT_ARRAY | VT_VARIANT` — the
 // shape Excel returns from `Range.Value` — into a Go value:
@@ -59,9 +134,11 @@ func decodeVariantArray(v *ole.VARIANT) (interface{}, error) {
 	}
 	// The VARIANT's `Val` field is `int64` but actually stores the SAFEARRAY
 	// pointer. Reinterpret the bytes via &Val — not a uintptr round-trip —
-	// to keep go vet happy with `unsafe.Pointer` rules.
-	sa := *(*unsafe.Pointer)(unsafe.Pointer(&v.Val))
-	if sa == nil {
+	// to keep go vet happy with `unsafe.Pointer` rules. The handle is then
+	// carried as a uintptr (the same convention the encode path uses): the
+	// memory is COM-allocated, so Go's GC never moves or frees it.
+	sa := uintptr(*(*unsafe.Pointer)(unsafe.Pointer(&v.Val)))
+	if sa == 0 {
 		return nil, nil
 	}
 	// getElement hands SafeArrayGetElement a VARIANT output buffer, which is
@@ -81,7 +158,7 @@ func decodeVariantArray(v *ole.VARIANT) (interface{}, error) {
 		return nil, fmt.Errorf("decodeVariantArray: SAFEARRAY element type VT 0x%x is not VT_VARIANT; typed arrays are not supported", vt)
 	}
 
-	dims, _, _ := procSafeArrayGetDim.Call(uintptr(sa))
+	dims, _, _ := procSafeArrayGetDim.Call(sa)
 	switch uint32(dims) {
 	case 1:
 		return decode1D(sa)
@@ -92,27 +169,60 @@ func decodeVariantArray(v *ole.VARIANT) (interface{}, error) {
 	}
 }
 
-func decode1D(sa unsafe.Pointer) ([]interface{}, error) {
+// dimLen returns the element count of one SAFEARRAY dimension. The subtraction
+// is done in int64 because SafeArrayGetLBound/GetUBound are signed 32-bit and a
+// hostile or corrupt descriptor (lo = MinInt32, hi = MaxInt32) would wrap an
+// int32 count to 0 or a negative. The count feeds unsafe.Slice on the raw
+// element buffer, so it must never be a wrapped value.
+func dimLen(lo, hi int32) (int, error) {
+	n := int64(hi) - int64(lo) + 1
+	if n <= 0 {
+		return 0, nil
+	}
+	if n > int64(maxInt) {
+		return 0, fmt.Errorf("SAFEARRAY dimension of %d elements exceeds the addressable range", n)
+	}
+	return int(n), nil
+}
+
+// maxInt is the largest value of Go's int on this build (32- or 64-bit).
+const maxInt = int(^uint(0) >> 1)
+
+func decode1D(sa uintptr) ([]interface{}, error) {
 	lo, hi, err := bounds(sa, 1)
 	if err != nil {
 		return nil, err
 	}
-	n := int(hi - lo + 1)
+	n, err := dimLen(lo, hi)
+	if err != nil {
+		return nil, err
+	}
 	if n <= 0 {
 		return []interface{}{}, nil
 	}
 	out := make([]interface{}, n)
-	for i := int32(0); i < int32(n); i++ {
-		val, err := getElement(sa, []int32{lo + i})
-		if err != nil {
-			return nil, err
+
+	cells, unlock, err := accessVariantData(sa, n)
+	if err != nil {
+		// Fall back to the per-element API — correct, just slower.
+		for i := int32(0); i < int32(n); i++ {
+			val, err := getElement(sa, []int32{lo + i})
+			if err != nil {
+				return nil, err
+			}
+			out[i] = val
 		}
-		out[i] = val
+		return out, nil
+	}
+	defer unlock()
+
+	for i := range out {
+		out[i] = decodeArrayCell(&cells[i])
 	}
 	return out, nil
 }
 
-func decode2D(sa unsafe.Pointer) ([][]interface{}, error) {
+func decode2D(sa uintptr) ([][]interface{}, error) {
 	rLo, rHi, err := bounds(sa, 1)
 	if err != nil {
 		return nil, err
@@ -121,45 +231,93 @@ func decode2D(sa unsafe.Pointer) ([][]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows := int(rHi - rLo + 1)
-	cols := int(cHi - cLo + 1)
+	rows, err := dimLen(rLo, rHi)
+	if err != nil {
+		return nil, err
+	}
+	cols, err := dimLen(cLo, cHi)
+	if err != nil {
+		return nil, err
+	}
 	if rows <= 0 || cols <= 0 {
 		return [][]interface{}{}, nil
 	}
+	// rows*cols is the length handed to unsafe.Slice; a wrapped product would
+	// alias memory past the element buffer. (Excel's own limits make this
+	// unreachable, but the decoder accepts arrays from any COM server.)
+	if cols > maxInt/rows {
+		return nil, fmt.Errorf("decodeVariantArray: %dx%d SAFEARRAY exceeds the addressable range", rows, cols)
+	}
 	out := make([][]interface{}, rows)
-	for r := 0; r < rows; r++ {
-		row := make([]interface{}, cols)
-		for c := 0; c < cols; c++ {
-			val, err := getElement(sa, []int32{rLo + int32(r), cLo + int32(c)})
-			if err != nil {
-				return nil, err
+	// One backing allocation for every cell, re-sliced per row: a 500x500 read
+	// drops 500 separate row allocations to one.
+	flat := make([]interface{}, rows*cols)
+	for r := range out {
+		out[r] = flat[r*cols : (r+1)*cols : (r+1)*cols]
+	}
+
+	cells, unlock, err := accessVariantData(sa, rows*cols)
+	if err != nil {
+		// Fall back to the per-element API — correct, just slower.
+		for r := 0; r < rows; r++ {
+			for c := 0; c < cols; c++ {
+				val, err := getElement(sa, []int32{rLo + int32(r), cLo + int32(c)})
+				if err != nil {
+					return nil, err
+				}
+				out[r][c] = val
 			}
-			row[c] = val
 		}
-		out[r] = row
+		return out, nil
+	}
+	defer unlock()
+
+	// Column-major: dimension 1 (the row index) varies fastest, so walking a
+	// column at a time is also the cache-friendly order.
+	for c := 0; c < cols; c++ {
+		col := cells[c*rows : (c+1)*rows]
+		for r := 0; r < rows; r++ {
+			out[r][c] = decodeArrayCell(&col[r])
+		}
 	}
 	return out, nil
+}
+
+// decodeArrayCell converts one SAFEARRAY cell — a VARIANT still *owned by the
+// array* — to a Go value. It is the bulk-access twin of getElement and must
+// keep the same conversion semantics, minus the Clear (the array owns the
+// element; clearing it here would free the array's own BSTRs).
+//
+// Object cells degrade to nil for the same reason getElement degrades them:
+// (*VARIANT).Value() hands back the raw interface pointer with no AddRef, and a
+// value grid cannot own a live COM reference. Returning it would outlive the
+// array (the caller's VARIANT is VariantClear'd by the arena) and dangle.
+func decodeArrayCell(v *ole.VARIANT) interface{} {
+	if v.VT == ole.VT_DISPATCH || v.VT == ole.VT_UNKNOWN {
+		return nil
+	}
+	return decodeVariantScalar(v)
 }
 
 // safeArrayVartype returns the element VARTYPE of a SAFEARRAY via
 // oleaut32!SafeArrayGetVartype. Used to reject typed arrays before the
 // VT_VARIANT-assuming element decode runs.
-func safeArrayVartype(sa unsafe.Pointer) (ole.VT, error) {
+func safeArrayVartype(sa uintptr) (ole.VT, error) {
 	var vt ole.VT
-	hr, _, _ := procSafeArrayGetVartype.Call(uintptr(sa), uintptr(unsafe.Pointer(&vt)))
+	hr, _, _ := procSafeArrayGetVartype.Call(sa, uintptr(unsafe.Pointer(&vt)))
 	if hr != 0 {
 		return 0, fmt.Errorf("SafeArrayGetVartype failed: 0x%x", hr)
 	}
 	return vt, nil
 }
 
-func bounds(sa unsafe.Pointer, dim uint32) (int32, int32, error) {
+func bounds(sa uintptr, dim uint32) (int32, int32, error) {
 	var lo, hi int32
-	hr, _, _ := procSafeArrayGetLBound.Call(uintptr(sa), uintptr(dim), uintptr(unsafe.Pointer(&lo)))
+	hr, _, _ := procSafeArrayGetLBound.Call(sa, uintptr(dim), uintptr(unsafe.Pointer(&lo)))
 	if hr != 0 {
 		return 0, 0, fmt.Errorf("SafeArrayGetLBound(dim=%d) failed: 0x%x", dim, hr)
 	}
-	hr, _, _ = procSafeArrayGetUBound.Call(uintptr(sa), uintptr(dim), uintptr(unsafe.Pointer(&hi)))
+	hr, _, _ = procSafeArrayGetUBound.Call(sa, uintptr(dim), uintptr(unsafe.Pointer(&hi)))
 	if hr != 0 {
 		return 0, 0, fmt.Errorf("SafeArrayGetUBound(dim=%d) failed: 0x%x", dim, hr)
 	}
@@ -225,13 +383,40 @@ func encode1D(src []interface{}) (*ole.VARIANT, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i, val := range src {
-		if err := putElement(sa, []int32{int32(i)}, val); err != nil {
-			procSafeArrayDestroy.Call(sa)
-			return nil, err
-		}
+	if err := fill1D(sa, src); err != nil {
+		// fill1D has already released its data lock, so the destroy (which
+		// fails with DISP_E_ARRAYISLOCKED on a locked array) can proceed. It
+		// VariantClears every cell, freeing whatever was written before the
+		// failure.
+		procSafeArrayDestroy.Call(sa)
+		return nil, err
 	}
 	return wrapSafeArray(sa), nil
+}
+
+// fill1D writes src into a freshly created (zero-initialized) 1-D VT_VARIANT
+// SAFEARRAY. On the bulk path each VARIANT is stored by value, which transfers
+// BSTR ownership to the array — unlike putElement, which deep-copies and then
+// clears the temporary.
+func fill1D(sa uintptr, src []interface{}) error {
+	cells, unlock, err := accessVariantData(sa, len(src))
+	if err != nil {
+		// Fall back to the per-element API — correct, just slower.
+		for i, val := range src {
+			if err := putElement(sa, []int32{int32(i)}, val); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	defer unlock()
+
+	for i, val := range src {
+		if err := scalarToVariant(val, &cells[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func encode2D(src [][]interface{}) (*ole.VARIANT, error) {
@@ -253,15 +438,40 @@ func encode2D(src [][]interface{}) (*ole.VARIANT, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := fill2D(sa, src, rows, cols); err != nil {
+		// fill2D has already released its data lock (see fill1D).
+		procSafeArrayDestroy.Call(sa)
+		return nil, err
+	}
+	return wrapSafeArray(sa), nil
+}
+
+// fill2D writes src into a freshly created (zero-initialized) 2-D VT_VARIANT
+// SAFEARRAY. See fill1D for the BSTR-ownership note and accessVariantData for
+// the column-major offset rule.
+func fill2D(sa uintptr, src [][]interface{}, rows, cols int) error {
+	cells, unlock, err := accessVariantData(sa, rows*cols)
+	if err != nil {
+		// Fall back to the per-element API — correct, just slower.
+		for r, row := range src {
+			for c, val := range row {
+				if err := putElement(sa, []int32{int32(r), int32(c)}, val); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	defer unlock()
+
 	for r, row := range src {
 		for c, val := range row {
-			if err := putElement(sa, []int32{int32(r), int32(c)}, val); err != nil {
-				procSafeArrayDestroy.Call(sa)
-				return nil, err
+			if err := scalarToVariant(val, &cells[c*rows+r]); err != nil {
+				return err
 			}
 		}
 	}
-	return wrapSafeArray(sa), nil
+	return nil
 }
 
 // createVariantSafeArray allocates a VT_VARIANT SAFEARRAY. The handle stays
@@ -309,8 +519,15 @@ func putElement(sa uintptr, indices []int32, val interface{}) error {
 // nil (VT_EMPTY), bool, string, all int/uint widths, float32/64, time.Time
 // (VT_DATE). Excel stores all numbers as doubles, so numeric width loss is
 // not a concern on the COM side.
+//
+// `out` must be an empty/uninitialized VARIANT the caller owns — this function
+// overwrites it without clearing, so passing a VARIANT that already holds a
+// BSTR or an interface pointer leaks it. Zeroing is done in Go rather than via
+// ole.VariantInit (an oleaut32 call) because the bulk encode path runs this
+// once per cell and the syscall dominated a large block write; a zeroed VARIANT
+// *is* VT_EMPTY, which is exactly what VariantInit produces.
 func scalarToVariant(val interface{}, out *ole.VARIANT) error {
-	ole.VariantInit(out)
+	*out = ole.VARIANT{}
 	switch x := val.(type) {
 	case nil:
 		// VT_EMPTY — an empty cell.
@@ -506,11 +723,11 @@ func decodeVariantScalar(v *ole.VARIANT) interface{} {
 // getElement reads one VARIANT cell from a VT_ARRAY|VT_VARIANT SAFEARRAY at
 // `indices` (one entry per dimension), converts it to a Go value, and clears
 // the temporary VARIANT.
-func getElement(sa unsafe.Pointer, indices []int32) (interface{}, error) {
+func getElement(sa uintptr, indices []int32) (interface{}, error) {
 	var v ole.VARIANT
 	ole.VariantInit(&v)
 	hr, _, _ := procSafeArrayGetElement.Call(
-		uintptr(sa),
+		sa,
 		uintptr(unsafe.Pointer(&indices[0])),
 		uintptr(unsafe.Pointer(&v)),
 	)
