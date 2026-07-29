@@ -471,11 +471,20 @@ func (c *chain) ForEach(callback func(item Chain) error) Chain {
 		// returns a freshly AddRef'd interface), mirroring the _NewEnum
 		// handling above. Previously only VT_DISPATCH was handled, so
 		// collections whose items enumerate as IUnknown were silently dropped.
+		//
+		// The nil check on the VT_DISPATCH branch is load-bearing: a collection
+		// may enumerate a VT_DISPATCH item whose pointer is NULL (COM
+		// `Nothing`), and go-ole's ToIDispatch hands that back as a nil
+		// *IDispatch — AddRef on it dereferences a nil vtable and panics. A nil
+		// item falls through to the "not an object" branch below, which Clears
+		// the VARIANT and skips it, matching handleResult's Nothing convention.
 		var itemDisp *ole.IDispatch
 		switch itemVar.VT {
 		case ole.VT_DISPATCH:
-			itemDisp = itemVar.ToIDispatch()
-			itemDisp.AddRef()
+			if d := itemVar.ToIDispatch(); d != nil {
+				d.AddRef()
+				itemDisp = d
+			}
 		case ole.VT_UNKNOWN:
 			if unk := itemVar.ToIUnknown(); unk != nil {
 				if d, qiErr := unk.QueryInterface(ole.IID_IDispatch); qiErr == nil {

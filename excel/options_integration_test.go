@@ -163,6 +163,143 @@ func TestOptions_ExpandTable_SingleCell(t *testing.T) {
 	})
 }
 
+// TestOptions_ExpandDown_MultiCellAnchor is the live-Excel regression for the
+// cross-axis collapse: expanding a 1x3 anchor down must keep all three columns.
+// Before the fix the rectangle was built from two addresses that both sat in
+// column A, so the read returned a 10x1 column and B/C were silently dropped
+// (with err == nil, so a caller could not detect the truncation).
+func TestOptions_ExpandDown_MultiCellAnchor(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		block := make([][]interface{}, 10)
+		for r := range block {
+			block[r] = []interface{}{float64(r*10 + 1), float64(r*10 + 2), float64(r*10 + 3)}
+		}
+		if err := sheet.Range("A1", "C10").SetValue(block).Err(); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+		// A11 deliberately empty — the block ends at row 10.
+
+		v, err := sheet.Range("A1", "C1").Options(excel.Expand("down")).Value()
+		if err != nil {
+			t.Fatalf("Options(Expand=down) on A1:C1: %v", err)
+		}
+		got, ok := v.([][]interface{})
+		if !ok {
+			t.Fatalf("expected [][]interface{} for a 10x3 expand, got %T (%v) — "+
+				"a 1-D result means the anchor's columns were collapsed", v, v)
+		}
+		if !reflect.DeepEqual(got, block) {
+			t.Errorf("got %v, want %v", got, block)
+		}
+	})
+}
+
+// TestOptions_ExpandRight_MultiCellAnchor is the row-wise mirror: a 3x1 anchor
+// grown right must keep all three rows.
+func TestOptions_ExpandRight_MultiCellAnchor(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		block := make([][]interface{}, 3)
+		for r := range block {
+			block[r] = make([]interface{}, 6)
+			for c := range block[r] {
+				block[r][c] = float64((r+1)*100 + c + 1)
+			}
+		}
+		if err := sheet.Range("A1", "F3").SetValue(block).Err(); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+
+		v, err := sheet.Range("A1", "A3").Options(excel.Expand("right")).Value()
+		if err != nil {
+			t.Fatalf("Options(Expand=right) on A1:A3: %v", err)
+		}
+		got, ok := v.([][]interface{})
+		if !ok {
+			t.Fatalf("expected [][]interface{} for a 3x6 expand, got %T (%v) — "+
+				"a 1-D result means the anchor's rows were collapsed", v, v)
+		}
+		if !reflect.DeepEqual(got, block) {
+			t.Errorf("got %v, want %v", got, block)
+		}
+	})
+}
+
+// TestOptions_ExpandMultiCellMatchesTable cross-checks the fixed "down"/"right"
+// branches against the "table" branch that was always two-dimensional: on a
+// rectangular block anchored at its top-left corner all three directions must
+// read the identical grid.
+func TestOptions_ExpandMultiCellMatchesTable(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		block := [][]interface{}{
+			{1.0, 2.0, 3.0},
+			{4.0, 5.0, 6.0},
+			{7.0, 8.0, 9.0},
+		}
+		if err := sheet.Range("A1", "C3").SetValue(block).Err(); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+
+		table, err := sheet.Range("A1").Options(excel.Expand("table")).Value()
+		if err != nil {
+			t.Fatalf("Expand=table: %v", err)
+		}
+		down, err := sheet.Range("A1", "C1").Options(excel.Expand("down")).Value()
+		if err != nil {
+			t.Fatalf("Expand=down: %v", err)
+		}
+		right, err := sheet.Range("A1", "A3").Options(excel.Expand("right")).Value()
+		if err != nil {
+			t.Fatalf("Expand=right: %v", err)
+		}
+		if !reflect.DeepEqual(down, table) {
+			t.Errorf("down %v != table %v", down, table)
+		}
+		if !reflect.DeepEqual(right, table) {
+			t.Errorf("right %v != table %v", right, table)
+		}
+		if !reflect.DeepEqual(table, block) {
+			t.Errorf("table %v != seeded block %v", table, block)
+		}
+	})
+}
+
+// TestOptions_ExpandDownHeaderStructDecode exercises the most typical xlwings
+// idiom on a multi-cell anchor: the header row is the anchor, Expand("down")
+// grows it over the records. With the cross-axis collapse this returned structs
+// whose 2nd and 3rd fields were all zero.
+func TestOptions_ExpandDownHeaderStructDecode(t *testing.T) {
+	type Row struct {
+		Name string
+		Age  float64
+		City string
+	}
+	withSheet(t, func(sheet excel.Worksheet) {
+		seed := [][]interface{}{
+			{"Name", "Age", "City"},
+			{"alice", 30.0, "seoul"},
+			{"bob", 25.0, "busan"},
+		}
+		if err := sheet.Range("A1", "C3").SetValue(seed).Err(); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+
+		var rows []Row
+		err := sheet.Range("A1", "C1").
+			Options(excel.Header(true), excel.Expand("down")).
+			Get(&rows)
+		if err != nil {
+			t.Fatalf("Header+Expand(down): %v", err)
+		}
+		want := []Row{
+			{Name: "alice", Age: 30, City: "seoul"},
+			{Name: "bob", Age: 25, City: "busan"},
+		}
+		if !reflect.DeepEqual(rows, want) {
+			t.Errorf("got %+v, want %+v", rows, want)
+		}
+	})
+}
+
 // TestOptions_StructDecode is the end-to-end happy path for the struct-by-
 // header decode driven directly from real Excel data.
 func TestOptions_StructDecode(t *testing.T) {

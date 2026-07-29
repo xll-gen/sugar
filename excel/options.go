@@ -295,17 +295,40 @@ func applyExpand(anchor Range, direction string) (Range, error) {
 	}
 }
 
-// expandFromEnd creates a new Range spanning the anchor's origin through its
-// End(dir) endpoint. Used for the "down" and "right" Expand variants. We
-// resolve both endpoint addresses to strings before re-asking Worksheet.Range
-// — see applyExpand's note on why we don't pass chains as COM parameters.
+// expandFromEnd creates a new Range spanning the anchor's origin through the
+// far corner of the block grown in `direction`. Used for the "down" and "right"
+// Expand variants. We resolve both corner addresses to strings before
+// re-asking Worksheet.Range — see applyExpand's note on why we don't pass
+// chains as COM parameters.
+//
+// The far corner is NOT the End(direction) cell itself: a multi-cell anchor
+// keeps its extent on the axis *perpendicular* to the growth direction, exactly
+// as the "table" branch keeps both axes. `Range("A1:C1")` grown down is
+// A1:C<end>, never A1:A<end> — building the rectangle from two addresses that
+// both sit in the anchor's first column collapses it to a single column and
+// silently truncates the read (columns B and C would vanish with err == nil).
+// xlwings' VerticalExpander does the same, ending its range at
+// `(end_row, rng.column + rng.shape[1] - 1)`.
 func expandFromEnd(anchor Range, direction int32) (Range, error) {
 	origin := anchor.Cells(1, 1)
 	startAddr, err := origin.Address()
 	if err != nil {
 		return nil, fmt.Errorf("expand: anchor address: %w", err)
 	}
-	endAddr, err := endpointAddr(origin, direction)
+	cross, err := crossSpan(anchor, direction)
+	if err != nil {
+		return nil, fmt.Errorf("expand: anchor span: %w", err)
+	}
+	end, err := endpointCell(origin, direction)
+	if err != nil {
+		return nil, fmt.Errorf("expand: end cell: %w", err)
+	}
+	// Widen (down) / deepen (right) the endpoint cell back to the anchor's own
+	// span so the two addresses bound the whole rectangle.
+	if dr, dc := expandCornerOffset(direction, cross); dr != 0 || dc != 0 {
+		end = end.Offset(dr, dc)
+	}
+	endAddr, err := end.Address()
 	if err != nil {
 		return nil, fmt.Errorf("expand: end address: %w", err)
 	}
@@ -314,19 +337,80 @@ func expandFromEnd(anchor Range, direction int32) (Range, error) {
 	return wrapRange(joined), nil
 }
 
-// endpointAddr returns the address of the far cell of the contiguous block
-// starting at the single-cell origin in the given direction, applying the
-// blank-neighbor guard (see applyExpand): when the adjacent cell is empty the
-// origin is its own endpoint, so End() is never called into empty space.
-func endpointAddr(origin Range, direction int32) (string, error) {
+// crossSpan returns the anchor's size along the axis perpendicular to the
+// expansion direction — the column count when growing down, the row count when
+// growing right. That is the span the expanded rectangle must preserve. Other
+// directions report 1 (no cross-axis widening); "table" derives both extents
+// from the data block itself and never calls this.
+func crossSpan(anchor Range, direction int32) (int, error) {
+	var (
+		span int32
+		err  error
+	)
+	switch direction {
+	case xlDown:
+		span, err = anchor.Columns().Count()
+	case xlToRight:
+		span, err = anchor.Rows().Count()
+	default:
+		return 1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if span < 1 {
+		// A COM Count of 0 (or an unexpected VARIANT shape narrowing to 0)
+		// would otherwise shift the corner backwards and invert the rectangle.
+		span = 1
+	}
+	return int(span), nil
+}
+
+// expandCornerOffset returns the (row, col) delta from the End(direction)
+// endpoint cell to the far corner of the expanded rectangle, given the anchor's
+// perpendicular span (see crossSpan). Growing down moves the corner right by
+// the anchor's column span; growing right moves it down by the row span. A
+// single-cell-wide cross axis needs no shift, which keeps the common 1x1 anchor
+// on exactly the same COM traffic as before.
+//
+// Pure arithmetic, so it is verifiable without Excel.
+// (The parameter is named `cross` rather than `crossSpan` so it does not shadow
+// the crossSpan function inside this scope.)
+func expandCornerOffset(direction int32, cross int) (rowOff, colOff int) {
+	if cross <= 1 {
+		return 0, 0
+	}
+	switch direction {
+	case xlDown:
+		return 0, cross - 1
+	case xlToRight:
+		return cross - 1, 0
+	}
+	return 0, 0
+}
+
+// endpointCell returns the far cell of the contiguous block starting at the
+// single-cell origin in the given direction, applying the blank-neighbor guard
+// (see applyExpand): when the adjacent cell is empty the origin is its own
+// endpoint, so End() is never called into empty space.
+func endpointCell(origin Range, direction int32) (Range, error) {
 	dr, dc := neighborOffset(direction)
 	blank, err := cellBlank(origin.Offset(dr, dc))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	end := origin
-	if !blank {
-		end = wrapRange(origin.Get("End", direction))
+	if blank {
+		return origin, nil
+	}
+	return wrapRange(origin.Get("End", direction)), nil
+}
+
+// endpointAddr is endpointCell's address — the form the "table" branch needs to
+// build its bounding box from two opposite corners.
+func endpointAddr(origin Range, direction int32) (string, error) {
+	end, err := endpointCell(origin, direction)
+	if err != nil {
+		return "", err
 	}
 	return end.Address()
 }
