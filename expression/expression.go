@@ -17,10 +17,80 @@
 //     string indexes are equivalent to dotted access (d['Key'] == d.Key).
 //   - Literals: integers, floats, strings, booleans, nil
 //   - Unary operators: -x, +x, !x / not x
-//   - Binary operators: + - * / only (no comparison or logical operators).
-//     Numeric operands are coerced to float64, so "2 + 2" yields float64(4)
-//     and division by zero follows float64 semantics (+Inf). "+" with a
-//     string operand concatenates.
+//   - Arithmetic: + - * / only. Numeric operands are coerced to float64, so
+//     "2 + 2" yields float64(4) and division by zero follows float64
+//     semantics (+Inf). "+" with a string operand concatenates.
+//   - Comparison: == != < <= > >= (see the contract below).
+//   - Logical: && || and or. These SHORT-CIRCUIT — the right-hand side is not
+//     evaluated, and therefore issues no COM round trips, when the left side
+//     already decides the result. Operands must be real booleans; there is no
+//     truthiness coercion, because "0 is false" over COM values (VT_BOOL vs
+//     0/-1 vs "") has no single right answer.
+//
+// Every other operator the expr grammar parses is an ERROR, never a silent
+// value. The full list, each pinned by TestOperatorContract_UnsupportedOnesError:
+//
+//	%   **   ..   ??   ?:
+//	^   in   matches   contains   startsWith   endsWith
+//
+// Note the three arithmetic ones. "Arithmetic is + - * /" is literally true,
+// but modulo and the two exponentiation spellings read like arithmetic and are
+// the ones most likely to be assumed present.
+//
+// # Comparison contract
+//
+// The type rules are deliberately narrow, because every permissive alternative
+// is silently wrong on spreadsheet data:
+//
+//   - numbers compare as float64, via the same coercion arithmetic uses, so
+//     int-vs-float mixes work — and 0.1+0.2 == 0.3 is false, and a uint64
+//     above 2^53 loses precision;
+//   - strings compare lexicographically;
+//   - bools and nil support EQUALITY ONLY;
+//   - "x == nil" is the "is this empty / absent" idiom;
+//   - every cross-kind pairing (number vs string, string vs bool, ...) is an
+//     error, not a fmt.Sprint comparison.
+//
+// CHAINED COMPARISON COSTS AN EXTRA ROUND TRIP. The parser folds "a < b < c"
+// into the conjunction "a < b && b < c", so the middle operand appears in both
+// conjuncts and this evaluator walks each one independently:
+//
+//   - "1 < obj.Prop < 9" issues TWO property reads of obj.Prop, not one;
+//   - "1 < obj.f() < 9" CALLS f TWICE, side effects included.
+//
+// Nothing caches between the conjuncts. This is the exact cost the logical
+// operators short-circuit to avoid, arriving through a spelling that does not
+// look like it has two operands at all. Read the property into the env, or write
+// the conjunction yourself, when the extra call matters. Measured and pinned by
+// TestComparison_ChainedComparisonWalksTheMiddleOperandTwice.
+//
+// A COM OBJECT operand is refused outright: a chain holding a dispatch but no
+// VARIANT result answers (nil, nil) from Value(), so "someObject == nil" would
+// otherwise report TRUE for a live object. Compare a property of it instead.
+// Object identity comparison is out of scope.
+//
+// KNOWN HOLE, deliberate and not fixable here: that refusal tests IsDispatch(),
+// which is true only for a reachable IDispatch. A chain that references a COM
+// object the engine cannot reach as an IDispatch — a bare VT_UNKNOWN result, or
+// the empty chain sugar degrades a non-IDispatch-capable IUnknown to — is NOT
+// refused, and "x == nil" answers TRUE for it. There is no observable that
+// separates those from COM Nothing: IsDispatch() is false, Store() reports "nil
+// dispatch" and Value() is (nil, nil) for all three (pinned by sugar's
+// TestVTUnknownChain_IsIndistinguishableFromNothing). Refusing them would mean
+// refusing Nothing too, and "Nothing == nil" must stay TRUE — that is what the
+// nil arm is for. Note also that sugar itself never hands this package a
+// VT_UNKNOWN chain: handleResult promotes a QI-able IUnknown to a dispatch
+// chain and degrades the rest, so the state is reachable only from a
+// hand-built VARIANT or a third-party Chain implementation.
+//
+// # Argumented properties are unreachable
+//
+// A call node is issued as DISPATCH_METHOD, so Excel members that take
+// arguments and are PROPERTIES — Range("A1"), Cells(1, 1), Offset, Resize,
+// End — answer DISP_E_MEMBERNOTFOUND through this package. Reach them with the
+// chain (sheet.Get("Range", "A1").Put("Value", v)) or the typed excel package.
+// A Call-then-Get fallback would silently change which COM verb a caller's
+// expression uses; it needs its own design pass, not a drive-by.
 //
 // # Environments and ownership
 //
@@ -485,6 +555,16 @@ func evalBinary(op string, left, right interface{}) (interface{}, error) {
 	// than an error, so `obj == nil` would unwrap to nil and cheerfully report
 	// TRUE -- i.e. "this live COM object is empty". Callers testing a cell for
 	// emptiness would get a confident wrong answer.
+	//
+	// The guard covers exactly what IsDispatch() covers: a REACHABLE IDispatch.
+	// A chain referencing a COM object the engine cannot reach as an IDispatch
+	// (bare VT_UNKNOWN, or the empty chain sugar degrades a non-IDispatch-capable
+	// IUnknown to) slips through and compares equal to nil. That is a documented
+	// hole, not an oversight: those chains are observationally identical to COM
+	// Nothing through the Chain interface (IsDispatch false / Store "nil
+	// dispatch" / Value (nil, nil)), and `Nothing == nil` must stay TRUE. See the
+	// package doc's "Comparison contract" section and
+	// TestComparison_NonDispatchObjectChainComparesEqualToNil.
 	leftIsObject := false
 	rightIsObject := false
 	if lc, ok := left.(sugar.Chain); ok {
