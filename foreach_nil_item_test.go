@@ -18,6 +18,7 @@ package sugar
 
 import (
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -31,6 +32,7 @@ const (
 	fakeSFalse              = 0x00000001
 	fakeENoInterface        = 0x80004002
 	fakeENotImpl            = 0x80004001
+	fakeEFail               = 0x80004005
 	fakeDispEUnknownName    = 0x80020006
 	fakeDispEMemberNotFound = 0x80020003
 	fakeDispIDNewEnum       = -4 // DISPID_NEWENUM
@@ -60,6 +62,14 @@ type fakeEnum struct {
 	refs  int32
 	items []ole.VARIANT
 	pos   int
+
+	// failAtPos > 0 makes Next return a FAILURE HRESULT once pos reaches it,
+	// modelling an enumeration that breaks part-way through (a collection mutated
+	// under the enumerator, a server that dies mid-iteration). Without this the
+	// fake could only ever produce the clean-exhaustion path, so the difference
+	// between "ended" and "broke" was untestable -- which is exactly the
+	// distinction ForEach used to collapse.
+	failAtPos int
 }
 
 var (
@@ -210,6 +220,9 @@ func fakeEnumNext(this, celt, rgVar, pceltFetched uintptr) uintptr {
 	if pceltFetched != 0 {
 		*fakePtr[uint32](pceltFetched) = 0
 	}
+	if obj.failAtPos > 0 && obj.pos >= obj.failAtPos {
+		return fakeEFail
+	}
 	if obj.pos >= len(obj.items) || celt == 0 || rgVar == 0 {
 		return fakeSFalse
 	}
@@ -291,6 +304,82 @@ func TestForEach_AllNullDispatchItems(t *testing.T) {
 	}
 	if coll.enum.refs != 0 {
 		t.Errorf("enumerator refcount leaked/underflowed: %d, want 0", coll.enum.refs)
+	}
+	runtime.KeepAlive(coll)
+}
+
+// TestForEach_PropagatesEnumNextError is the regression for the silent truncation
+// (2026-08-03).
+//
+// enum.Next() reports two different things through one return path: "no more items"
+// (S_FALSE, fetched == 0) and "the enumeration FAILED". ForEach used to `break` on
+// both, then `return c` -- the receiver -- so a collection that broke after two of
+// four items produced two callbacks, a nil Err(), and a caller convinced it had seen
+// everything. There is no way to detect the loss from the outside: the callback count
+// is whatever it is, and a short collection is a legitimate outcome.
+//
+// The scripted enumerator here hands out two items and then fails, so the assertion
+// is exactly the distinction: the callback saw the first two, AND Err() is non-nil.
+func TestForEach_PropagatesEnumNextError(t *testing.T) {
+	coll := newFakeCollection()
+	coll.enum.items = []ole.VARIANT{
+		coll.variant(),
+		coll.variant(),
+		coll.variant(), // never reached: Next fails before handing this one out
+	}
+	coll.enum.failAtPos = 2
+
+	c := &chain{disp: coll.dispatch()}
+
+	var delivered int
+	res := c.ForEach(func(item Chain) error {
+		delivered++
+		return nil
+	})
+
+	if err := res.Err(); err == nil {
+		t.Fatalf("ForEach reported success after IEnumVARIANT.Next FAILED at item %d; "+
+			"the caller processed %d of %d items believing the enumeration was complete",
+			coll.enum.failAtPos, delivered, len(coll.enum.items))
+	} else if !strings.Contains(err.Error(), "ForEach") {
+		t.Errorf("error should name the operation that failed, got %q", err.Error())
+	}
+	if delivered != 2 {
+		t.Errorf("callback ran %d times, want 2 (the items delivered before the failure)", delivered)
+	}
+	// The failure path must not leak: both items handed out are Released by their
+	// item chains, and the enumerator by ForEach's defer, error or not.
+	if coll.refs != 0 {
+		t.Errorf("collection refcount leaked/underflowed on the error path: %d, want 0", coll.refs)
+	}
+	if coll.enum.refs != 0 {
+		t.Errorf("enumerator refcount leaked/underflowed on the error path: %d, want 0", coll.enum.refs)
+	}
+	runtime.KeepAlive(coll)
+}
+
+// TestForEach_CleanExhaustionStillSucceeds pins the other side of the split: normal
+// exhaustion (S_FALSE) must remain a SUCCESS. Without this, "propagate the error"
+// could be satisfied by failing every enumeration.
+func TestForEach_CleanExhaustionStillSucceeds(t *testing.T) {
+	coll := newFakeCollection()
+	coll.enum.items = []ole.VARIANT{coll.variant(), coll.variant()}
+	// failAtPos left 0: the enumerator exhausts cleanly.
+
+	c := &chain{disp: coll.dispatch()}
+	var delivered int
+	res := c.ForEach(func(item Chain) error {
+		delivered++
+		return nil
+	})
+	if err := res.Err(); err != nil {
+		t.Fatalf("clean exhaustion must not be an error, got %v", err)
+	}
+	if delivered != 2 {
+		t.Errorf("callback ran %d times, want 2", delivered)
+	}
+	if coll.refs != 0 || coll.enum.refs != 0 {
+		t.Errorf("refcounts: collection=%d enum=%d, want 0/0", coll.refs, coll.enum.refs)
 	}
 	runtime.KeepAlive(coll)
 }

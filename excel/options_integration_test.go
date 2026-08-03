@@ -131,6 +131,74 @@ func TestOptions_ExpandDown_SeparateIsland(t *testing.T) {
 	})
 }
 
+// TestOptions_ExpandTable_BlankCorner is the live-Excel regression for the
+// endpoint ladder. The layout is the commonest table shape there is — an empty
+// top-left corner, headers along row 1, labels down column A:
+//
+//	    A      B    C
+//	1 (empty) Jan  Feb
+//	2  North   1    2
+//	3  South   3    4
+//	4  East    5    6
+//
+// The old guard probed A2, found it non-empty, and then called End("down") from
+// the *blank* A1. Excel's End() from an empty cell lands on the first non-empty
+// cell rather than the end of the run, so the expansion reported A1:B2 and the
+// read returned 4 cells out of 12 with err == nil. Only real Excel can attest
+// that End()-from-blank semantics; the Excel-free fake asserts the same shape.
+func TestOptions_ExpandTable_BlankCorner(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		// A1 deliberately left empty.
+		seed := [][]interface{}{
+			{nil, "Jan", "Feb"},
+			{"North", 1.0, 2.0},
+			{"South", 3.0, 4.0},
+			{"East", 5.0, 6.0},
+		}
+		if err := sheet.Range("A1", "C4").SetValue(seed).Err(); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+
+		v, err := sheet.Range("A1").Options(excel.Expand("table")).Value()
+		if err != nil {
+			t.Fatalf("Expand=table with a blank corner: %v", err)
+		}
+		if !reflect.DeepEqual(v, seed) {
+			t.Errorf("blank-corner table: got %v, want %v", v, seed)
+		}
+
+		down, err := sheet.Range("A1").Options(excel.Expand("down")).Value()
+		if err != nil {
+			t.Fatalf("Expand=down with a blank corner: %v", err)
+		}
+		wantDown := []interface{}{nil, "North", "South", "East"}
+		if !reflect.DeepEqual(down, wantDown) {
+			t.Errorf("blank-corner down: got %v, want %v", down, wantDown)
+		}
+	})
+}
+
+// TestOptions_ExpandDown_TwoCellBlock pins the ladder's middle rung against
+// real Excel. With exactly two filled cells the endpoint is the second one:
+// End("down") from the neighbor would sail past the block to row 1048576 and
+// drag in a million blanks.
+func TestOptions_ExpandDown_TwoCellBlock(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		sheet.Range("A1").SetValue("first")
+		sheet.Range("A2").SetValue("second")
+		// A3 onwards empty, nothing else on the sheet.
+
+		v, err := sheet.Range("A1").Options(excel.Expand("down")).Value()
+		if err != nil {
+			t.Fatalf("Expand=down on a 2-cell block: %v", err)
+		}
+		want := []interface{}{"first", "second"}
+		if !reflect.DeepEqual(v, want) {
+			t.Errorf("2-cell block: got %T %v, want %v", v, v, want)
+		}
+	})
+}
+
 // TestOptions_ExpandRight_SingleCell is the row analogue of the single-cell
 // down guard.
 func TestOptions_ExpandRight_SingleCell(t *testing.T) {

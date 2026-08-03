@@ -259,7 +259,8 @@ func (o *optionedRange) effectiveRange() (Range, error) {
 // island, so we do NOT expand that dimension — the origin is its own endpoint.
 // This mirrors xlwings' expansion.py, which only calls end() when the adjacent
 // raw_value is non-empty. For "table" both the down and right dimensions are
-// guarded independently.
+// guarded independently. The guard is a three-rung ladder, not a single probe
+// — see endpointCell for what the second rung buys.
 //
 // Implementation note: Excel COM accepts string addresses for the
 // `Worksheet.Range(cell1, cell2)` form, and go-ole's Invoke dispatcher
@@ -393,16 +394,55 @@ func expandCornerOffset(direction int32, cross int) (rowOff, colOff int) {
 // single-cell origin in the given direction, applying the blank-neighbor guard
 // (see applyExpand): when the adjacent cell is empty the origin is its own
 // endpoint, so End() is never called into empty space.
+//
+// The three rungs mirror xlwings' expansion.py exactly (TableExpander /
+// VerticalExpander / HorizontalExpander all use the same ladder):
+//
+//	neighbor blank        -> origin is its own endpoint
+//	second neighbor blank -> the neighbor is the endpoint
+//	otherwise             -> neighbor.End(direction)
+//
+// Two things hang on the last rung starting from the *neighbor* rather than
+// from the origin, which is what sugar used to do:
+//
+//   - A blank origin no longer truncates the block. Excel's End() from an
+//     empty cell jumps to the *first* non-empty cell instead of the last cell
+//     of a run, so `A1:E10` with an empty top-left corner (a table whose
+//     header row starts at B1 and whose row labels start at A2 — the most
+//     ordinary spreadsheet layout there is) expanded down collapsed to A1:A2
+//     and read two cells instead of ten. End() is now only ever called from a
+//     cell the ladder has already proven non-empty.
+//   - The middle rung is what makes that safe for a two-cell block: with the
+//     second neighbor blank, End() from the neighbor would jump *past* the
+//     block to the next data island (or the sheet edge), so the neighbor is
+//     returned directly without calling End() at all.
+//
+// For a non-empty origin every rung agrees with the old single probe, so this
+// widens the accepted layouts without moving any case that already worked.
 func endpointCell(origin Range, direction int32) (Range, error) {
 	dr, dc := neighborOffset(direction)
-	blank, err := cellBlank(origin.Offset(dr, dc))
+	if dr == 0 && dc == 0 {
+		return origin, nil
+	}
+
+	neighbor := origin.Offset(dr, dc)
+	blank, err := cellBlank(neighbor)
 	if err != nil {
 		return nil, err
 	}
 	if blank {
 		return origin, nil
 	}
-	return wrapRange(origin.Get("End", direction)), nil
+
+	blank, err = cellBlank(origin.Offset(2*dr, 2*dc))
+	if err != nil {
+		return nil, err
+	}
+	if blank {
+		return neighbor, nil
+	}
+
+	return wrapRange(neighbor.Get("End", direction)), nil
 }
 
 // endpointAddr is endpointCell's address — the form the "table" branch needs to

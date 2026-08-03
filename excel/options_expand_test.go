@@ -156,8 +156,26 @@ func (f *fakeCell) Get(prop string, params ...interface{}) sugar.Chain {
 	return sugar.Error(fmt.Errorf("fake: unexpected Get(%q)", prop))
 }
 
-// end walks the contiguous run of non-empty cells, mirroring Ctrl+Arrow from a
-// non-empty start cell (the only case the blank-neighbor guard lets through).
+// Sheet bounds, so "End() ran off into empty space" is an observable landing
+// spot in these tests rather than an infinite walk. These are Excel's real
+// limits (XFD1048576).
+const (
+	fakeMaxRow = 1048576
+	fakeMaxCol = 16384
+)
+
+// end models Ctrl+Arrow. All three of Excel's cases are implemented, because
+// the interesting one for the blank-neighbor guard is the one the guard exists
+// to prevent:
+//
+//   - start non-empty, adjacent non-empty -> last cell of the contiguous run
+//   - start non-empty, adjacent empty     -> next non-empty cell, else the edge
+//   - start empty                         -> next non-empty cell, else the edge
+//
+// A fake that only implemented the first case would let a caller that jumps
+// off a blank cell look correct here while truncating in real Excel — which is
+// exactly the bug the ladder in endpointCell fixes, so the fake has to be able
+// to show it.
 func (f *fakeCell) end(dir int32) sugar.Chain {
 	var dr, dc int
 	switch dir {
@@ -172,18 +190,63 @@ func (f *fakeCell) end(dir int32) sugar.Chain {
 	default:
 		return sugar.Error(fmt.Errorf("fake: unknown End direction %d", dir))
 	}
-	r, c := f.row, f.col
-	for {
-		nr, nc := r+dr, c+dc
-		if nr < 1 || nc < 1 {
-			break
-		}
-		if _, ok := f.g.cells[[2]int{nr, nc}]; !ok {
-			break
-		}
-		r, c = nr, nc
+
+	filled := func(r, c int) bool {
+		_, ok := f.g.cells[[2]int{r, c}]
+		return ok
 	}
-	return f.cellAt(r, c)
+
+	r, c := f.row, f.col
+	if filled(r, c) && filled(r+dr, c+dc) {
+		for filled(r+dr, c+dc) {
+			r, c = r+dr, c+dc
+		}
+		return f.cellAt(r, c)
+	}
+	if nr, nc, ok := f.g.nextFilled(r, c, dr, dc); ok {
+		return f.cellAt(nr, nc)
+	}
+	// Nothing ahead: Excel parks on the sheet edge.
+	switch {
+	case dr > 0:
+		return f.cellAt(fakeMaxRow, c)
+	case dr < 0:
+		return f.cellAt(1, c)
+	case dc > 0:
+		return f.cellAt(r, fakeMaxCol)
+	default:
+		return f.cellAt(r, 1)
+	}
+}
+
+// nextFilled finds the nearest non-empty cell strictly beyond (row, col) along
+// the (dr, dc) ray. The sparse map is scanned rather than the ray walked so a
+// jump to the sheet edge costs O(cells) instead of a million lookups.
+func (g *fakeGrid) nextFilled(row, col, dr, dc int) (int, int, bool) {
+	best, bestR, bestC := 0, 0, 0
+	for k := range g.cells {
+		r, c := k[0], k[1]
+		var dist int
+		switch {
+		case dr != 0:
+			if c != col {
+				continue
+			}
+			dist = (r - row) * dr
+		default:
+			if r != row {
+				continue
+			}
+			dist = (c - col) * dc
+		}
+		if dist <= 0 {
+			continue
+		}
+		if best == 0 || dist < best {
+			best, bestR, bestC = dist, r, c
+		}
+	}
+	return bestR, bestC, best != 0
 }
 
 func (f *fakeCell) block() [][]interface{} {
@@ -411,6 +474,137 @@ func TestExpand_BlankNeighborKeepsMultiCellAnchor(t *testing.T) {
 	}
 	if want := [2]string{"$A$1", "$C$1"}; corners != want {
 		t.Errorf("corners: got %v, want %v", corners, want)
+	}
+}
+
+// TestExpand_BlankOriginDoesNotTruncate is the regression for the endpoint
+// ladder. The layout is the most ordinary table there is: an empty top-left
+// corner, column headers along row 1, row labels down column A.
+//
+//	    A      B    C
+//	1 (empty) Jan  Feb
+//	2  North   1    2
+//	3  South   3    4
+//	4  East    5    6
+//
+// Anchored at A1, the old two-rung guard probed A2 (non-empty, so the guard
+// let it through) and then called End("down") from A1 — which is *empty*, so
+// Excel jumps to the first non-empty cell, A2, not to the end of the run. The
+// expansion reported A1:A2 and the caller read 2 cells out of 12.
+func TestExpand_BlankOriginDoesNotTruncate(t *testing.T) {
+	// Everything except the A1 corner.
+	newGrid := func() *fakeGrid {
+		g := newFakeGrid().fill(1, 2, 1, 2) // B1:C1 headers
+		g.fill(2, 1, 3, 3)                  // A2:C4 labels + data
+		return g
+	}
+
+	t.Run("down", func(t *testing.T) {
+		g := newGrid()
+		addr, corners := expandedAddress(t, g, g.rangeAt(1, 1, 1, 1), "down")
+		if want := "$A$1:$A$4"; addr != want {
+			t.Errorf("Expand(down) off a blank origin: got %s, want %s", addr, want)
+		}
+		if want := [2]string{"$A$1", "$A$4"}; corners != want {
+			t.Errorf("corners: got %v, want %v", corners, want)
+		}
+	})
+
+	t.Run("right", func(t *testing.T) {
+		g := newGrid()
+		addr, _ := expandedAddress(t, g, g.rangeAt(1, 1, 1, 1), "right")
+		if want := "$A$1:$C$1"; addr != want {
+			t.Errorf("Expand(right) off a blank origin: got %s, want %s", addr, want)
+		}
+	})
+
+	t.Run("table covers the whole block", func(t *testing.T) {
+		g := newGrid()
+		addr, _ := expandedAddress(t, g, g.rangeAt(1, 1, 1, 1), "table")
+		if want := "$A$1:$C$4"; addr != want {
+			t.Errorf("Expand(table) off a blank origin: got %s, want %s", addr, want)
+		}
+	})
+}
+
+// TestExpand_TwoCellBlockStopsAtTheBlock pins the middle rung. With exactly two
+// filled cells the endpoint must be the second one; calling End() from the
+// neighbor instead would sail past the block to the next data island (or, with
+// nothing beyond, to row 1048576) and drag in every blank cell on the way.
+func TestExpand_TwoCellBlockStopsAtTheBlock(t *testing.T) {
+	t.Run("down, nothing beyond", func(t *testing.T) {
+		g := newFakeGrid().fill(1, 1, 2, 1) // A1:A2 only
+		addr, _ := expandedAddress(t, g, g.rangeAt(1, 1, 1, 1), "down")
+		if want := "$A$1:$A$2"; addr != want {
+			t.Errorf("Expand(down) on a 2-cell block: got %s, want %s", addr, want)
+		}
+	})
+
+	t.Run("down, distant island beyond", func(t *testing.T) {
+		g := newFakeGrid().fill(1, 1, 2, 1) // A1:A2
+		g.fill(500, 1, 3, 1)                // A500:A502, a separate island
+		addr, _ := expandedAddress(t, g, g.rangeAt(1, 1, 1, 1), "down")
+		if want := "$A$1:$A$2"; addr != want {
+			t.Errorf("Expand(down) must not reach the island: got %s, want %s", addr, want)
+		}
+	})
+
+	t.Run("right, nothing beyond", func(t *testing.T) {
+		g := newFakeGrid().fill(1, 1, 1, 2) // A1:B1 only
+		addr, _ := expandedAddress(t, g, g.rangeAt(1, 1, 1, 1), "right")
+		if want := "$A$1:$B$1"; addr != want {
+			t.Errorf("Expand(right) on a 2-cell block: got %s, want %s", addr, want)
+		}
+	})
+}
+
+// TestFakeEnd_ModelsExcelsThreeCases guards the fake itself. If End() from a
+// blank cell silently behaved like End() from a non-empty one, every test above
+// would pass no matter what endpointCell did — the harness would have stopped
+// being able to fail. (This is the "can this tool show a failure as a failure?"
+// check, applied to the harness rather than the product.)
+func TestFakeEnd_ModelsExcelsThreeCases(t *testing.T) {
+	endAddr := func(g *fakeGrid, row, col int, dir int32) string {
+		t.Helper()
+		c := &fakeCell{g: g, kind: "range", row: row, col: col, rows: 1, cols: 1}
+		got := c.end(dir)
+		if err := got.Err(); err != nil {
+			t.Fatalf("fake End: %v", err)
+		}
+		addr, err := wrapRange(got).Address()
+		if err != nil {
+			t.Fatalf("fake End address: %v", err)
+		}
+		return addr
+	}
+
+	run := newFakeGrid().fill(1, 1, 4, 1) // A1:A4
+
+	if got, want := endAddr(run, 1, 1, xlDown), "$A$4"; got != want {
+		t.Errorf("contiguous run: got %s, want %s", got, want)
+	}
+
+	// Blank start with a run below: Excel stops at the *first* filled cell.
+	// This asymmetry is the entire reason endpointCell must not jump off a
+	// blank origin.
+	blankTop := newFakeGrid().fill(2, 1, 4, 1) // A2:A5
+	if got, want := endAddr(blankTop, 1, 1, xlDown), "$A$2"; got != want {
+		t.Errorf("blank start: got %s, want %s", got, want)
+	}
+
+	// Non-empty start, blank neighbor, island further down.
+	gap := newFakeGrid().fill(1, 1, 1, 1) // A1
+	gap.fill(9, 1, 2, 1)                  // A9:A10
+	if got, want := endAddr(gap, 1, 1, xlDown), "$A$9"; got != want {
+		t.Errorf("gap then island: got %s, want %s", got, want)
+	}
+
+	// Nothing ahead at all: the sheet edge.
+	if got, want := endAddr(gap, 10, 1, xlDown), "$A$1048576"; got != want {
+		t.Errorf("empty ray: got %s, want %s", got, want)
+	}
+	if got, want := endAddr(gap, 1, 1, xlToRight), "$XFD$1"; got != want {
+		t.Errorf("empty ray rightwards: got %s, want %s", got, want)
 	}
 }
 

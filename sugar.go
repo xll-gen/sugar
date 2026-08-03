@@ -423,6 +423,26 @@ var (
 	ErrForEachBreak error = &ForEachBreak{}
 )
 
+// comFailed reports whether a go-ole error carries an actual COM FAILURE code.
+//
+// go-ole raises an error for ANY non-zero HRESULT (`if hr != 0 { err = NewError(hr) }`),
+// but HRESULT has success codes other than S_OK -- S_FALSE (1) above all, which is how
+// IEnumVARIANT::Next reports "no more items". So a non-nil go-ole error does NOT mean
+// something went wrong, and code that assumes it does treats the natural end of every
+// collection as a failure. (Measured: switching ForEach to a bare `err != nil` check made
+// three healthy-input tests fail immediately.)
+//
+// This is COM's FAILED() macro: failure iff the sign bit is set.
+func comFailed(err error) bool {
+	var oleErr *ole.OleError
+	if errors.As(err, &oleErr) {
+		return int32(oleErr.Code()) < 0
+	}
+	// Not a go-ole HRESULT wrapper -- a Go-level error from our own code. Nothing else
+	// here produces S_FALSE-style benign errors, so treat it as real.
+	return true
+}
+
 // ForEach executes a callback for each item in a COM collection.
 // If the callback returns a non-nil error, the iteration stops and the error
 // is recorded in the returned Chain.
@@ -461,8 +481,23 @@ func (c *chain) ForEach(callback func(item Chain) error) Chain {
 
 	for {
 		itemVar, fetched, err := enum.Next(1)
-		if err != nil || fetched == 0 {
-			break
+		// An enumeration FAILURE and normal exhaustion used to share one `break`, so a
+		// collection that broke half-way through looked exactly like one that ended:
+		// ForEach returned the receiver, Err() stayed nil, and the caller processed a
+		// TRUNCATED set believing it was complete. Every other failure in this function
+		// propagates (the _NewEnum acquisition above, the callback's error below) --
+		// this was the only silent exit.
+		//
+		// The test is comFailed, NOT `err != nil`. go-ole builds its error from
+		// `if hr != 0`, and IEnumVARIANT::Next signals normal exhaustion with S_FALSE
+		// (hr == 1) — a SUCCESS code. So `err != nil` is also true at the natural end of
+		// every collection, and treating that as a failure makes ForEach report an error
+		// on completely healthy input. Only COM failure codes (sign bit set) are real.
+		if err != nil && comFailed(err) {
+			return &chain{err: fmt.Errorf("ForEach: IEnumVARIANT.Next: %w", err), ctx: c.ctx}
+		}
+		if fetched == 0 {
+			break // clean termination (S_FALSE, or a short fetch)
 		}
 
 		// Resolve the item to an IDispatch we own one reference to. A
