@@ -416,20 +416,59 @@ sugar.Do(func(ctx sugar.Context) error {
 The `expression` package allows you to manipulate complex hierarchies with a single line of code.
 
 ```go
-import "github.com/xll-gen/sugar/expression"
+import (
+    "fmt"
+    "log"
 
-sugar.Do(func(ctx sugar.Context) error {
+    "github.com/xll-gen/sugar"
+    "github.com/xll-gen/sugar/expression"
+)
+
+err := sugar.Do(func(ctx sugar.Context) error {
     excel := ctx.Create("Excel.Application")
-    
-    // Set complex paths at once
-    expression.Put(excel, "ActiveSheet.Range('A1').Value", "Hello Sugar!")
-    
-    // Read values
-    val, _ := expression.Get(excel, "ActiveSheet.Range('A1').Value")
-    fmt.Println(val)
+
+    // Quit is the graceful half of the cleanup contract; the arena releases
+    // the COM references, but it does not close the application for you.
+    if err := excel.Put("DisplayAlerts", false).Err(); err != nil {
+        return err
+    }
+    defer excel.Call("Quit")
+
+    // Set a property at the end of a path. Workbooks.Add() is a method call,
+    // ActiveSheet and Name are properties. A freshly created
+    // Excel.Application has NO workbook, so anything reached through
+    // ActiveSheet must create one first.
+    if err := expression.Put(excel, "Workbooks.Add().ActiveSheet.Name", "Sugar"); err != nil {
+        return err
+    }
+
+    // Read it back.
+    name, err := expression.Get(excel, "ActiveSheet.Name")
+    if err != nil {
+        return err
+    }
+    fmt.Println(name) // Sugar
     return nil
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
+
+**Limitation — argumented properties.** Excel members that take arguments *and*
+are properties (`Range("A1")`, `Cells(1, 1)`, `Offset(1, 0)`, `Resize(...)`,
+`End(...)`) are **not** reachable through the expression call syntax: the engine
+issues a call as `DISPATCH_METHOD`, and Excel answers
+`DISP_E_MEMBERNOTFOUND` for those members. Reach cells through the chain (or the
+typed `excel` package) instead:
+
+```go
+// Chain: Range is read with Get (propget), then Value is Put.
+excel.Get("ActiveSheet").Get("Range", "A1").Put("Value", "Hello Sugar!")
+```
+
+Both blocks above are executed by `expression/example_test.go` under
+`-tags=excel_integration`, so they cannot drift from the code.
 
 ## Considerations
 

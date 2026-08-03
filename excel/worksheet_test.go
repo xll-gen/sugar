@@ -135,6 +135,95 @@ func TestWorksheet_SetVisibleRoundTrip(t *testing.T) {
 	})
 }
 
+// TestWorksheet_Delete closes the last coverage gap on Worksheet: Delete had no
+// test at all.
+//
+// Two details make or break this test:
+//
+//   - A fresh Workbooks.Add() workbook has ONE sheet on modern Excel
+//     (SheetsInNewWorkbook defaults to 1), and Excel REFUSES to delete the last
+//     visible sheet. Deleting wb.ActiveSheet() would therefore assert an error
+//     path while claiming to assert deletion, so a second sheet is added first.
+//   - Count alone is not enough: it would still pass if Delete removed a
+//     DIFFERENT sheet. The name has to be gone too.
+//
+// The subtest at the end pins the refusal, which also proves the test can see
+// Delete failing at all.
+func TestWorksheet_Delete(t *testing.T) {
+	withBook(t, func(wb excel.Workbook) {
+		// The harness suppresses the "permanently delete" modal. If that ever
+		// regresses, this test would hang until the 5 s force-kill tier fires
+		// and would look like a product failure — so assert it, do not trust it.
+		if alerts, err := wb.App().DisplayAlerts(); err != nil || alerts {
+			t.Fatalf("DisplayAlerts = %v err=%v; want false (Delete raises a modal otherwise)", alerts, err)
+		}
+
+		sheets := wb.Worksheets()
+		before, err := sheets.Count()
+		if err != nil {
+			t.Fatalf("Worksheets().Count(): %v", err)
+		}
+
+		const name = "SugarDeleteMe"
+		victim := sheets.Add(excel.AddName(name))
+		if err := victim.Err(); err != nil {
+			t.Fatalf("Worksheets().Add(AddName(%q)): %v", name, err)
+		}
+		if got, err := sheets.Count(); err != nil || got != before+1 {
+			t.Fatalf("Count after Add = %d err=%v; want %d", got, err, before+1)
+		}
+		if got, err := victim.Name(); err != nil || got != name {
+			t.Fatalf("new sheet Name = %q err=%v; want %q", got, err, name)
+		}
+
+		if err := victim.Delete(); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if got, err := sheets.Count(); err != nil || got != before {
+			t.Errorf("Count after Delete = %d err=%v; want %d", got, err, before)
+		}
+		// The count would also be satisfied by deleting the wrong sheet.
+		if err := sheets.Item(name).Err(); err == nil {
+			t.Errorf("Worksheets().Item(%q) still resolves after Delete", name)
+		}
+		remaining, err := sheets.Count()
+		if err != nil {
+			t.Fatalf("Count: %v", err)
+		}
+		var names []string
+		for i := int32(1); i <= remaining; i++ {
+			n, err := sheets.Item(i).Name()
+			if err != nil {
+				t.Fatalf("Item(%d).Name(): %v", i, err)
+			}
+			names = append(names, n)
+		}
+		for _, n := range names {
+			if n == name {
+				t.Errorf("sheet %q survived Delete (sheets: %v)", name, names)
+			}
+		}
+
+		// Deleting the last remaining sheet must fail, not silently succeed —
+		// which also proves this test can observe Delete failing at all.
+		//
+		// Inline, NOT a t.Run subtest: t.Run runs the closure on a fresh
+		// goroutine, which is outside this thread's COM apartment, and every
+		// call there fails with "CoInitialize has not been called". Any COM work
+		// must stay on the sugar.Do thread.
+		if remaining != 1 {
+			t.Fatalf("expected a single sheet left, got %d (%v)", remaining, names)
+		}
+		last := sheets.Item(1)
+		if err := last.Err(); err != nil {
+			t.Fatalf("Worksheets().Item(1): %v", err)
+		}
+		if err := last.Delete(); err == nil {
+			t.Error("Delete on the workbook's only sheet returned nil; Excel must refuse it")
+		}
+	})
+}
+
 // TestWorksheet_AutoFit widens a narrow column by auto-fitting long content.
 func TestWorksheet_AutoFit(t *testing.T) {
 	withSheet(t, func(sheet excel.Worksheet) {

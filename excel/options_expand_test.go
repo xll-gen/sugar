@@ -71,6 +71,14 @@ type fakeCell struct {
 	row, col, rows, cols int         // kind == "range"
 	n                    int32       // kind == "count"
 	val                  interface{} // kind == "value"
+
+	// multiAreaAddr, when set, overrides Address() with the comma-joined form
+	// Excel returns for a multi-area range ("$A$1:$C$1,$E$1:$F$1"). row/col/
+	// rows/cols keep describing the FIRST AREA only, which is what Excel's
+	// Cells / Rows.Count / Columns.Count report on such a range — modelling the
+	// full multi-area extent here would make a test assert behaviour Excel does
+	// not have.
+	multiAreaAddr string
 }
 
 func (f *fakeCell) value(v interface{}) sugar.Chain {
@@ -263,6 +271,9 @@ func (f *fakeCell) block() [][]interface{} {
 // address renders the A1 form Excel's Address property returns: "$A$1" for a
 // single cell, "$A$1:$C$10" for a rectangle.
 func (f *fakeCell) address() string {
+	if f.multiAreaAddr != "" {
+		return f.multiAreaAddr
+	}
 	tl := "$" + fakeColName(f.col) + "$" + strconv.Itoa(f.row)
 	if f.rows == 1 && f.cols == 1 {
 		return tl
@@ -474,6 +485,43 @@ func TestExpand_BlankNeighborKeepsMultiCellAnchor(t *testing.T) {
 	}
 	if want := [2]string{"$A$1", "$C$1"}; corners != want {
 		t.Errorf("corners: got %v, want %v", corners, want)
+	}
+}
+
+// TestExpand_MultiAreaAnchorUsesFirstAreaOnly pins the documented rule for a
+// multi-area anchor (Range("A1:C1,E1:F1")): the expansion is built from the
+// FIRST AREA and returns ONE rectangle, with no error.
+//
+// Both halves of that decision are load-bearing:
+//
+//   - First-area semantics are not a choice sugar makes, they are what Excel
+//     reports: Cells(1,1), Rows.Count and Columns.Count are all first-area-only
+//     on a multi-area range, and applyExpand consumes exactly those.
+//   - Not an error, because that is also upstream behaviour. xlwings has no
+//     Areas concept at all and rebuilds any Range from first-area coords
+//     (_xlwindows.py Range.coords / __init__), so a multi-area range is
+//     rectangularized there even more aggressively than here. Turning this into
+//     an error would break every caller passing a multi-area address today AND
+//     move sugar away from xlwings.
+//
+// The anchor's Address() therefore reports the multi-area form while its
+// first-area geometry drives the expansion; E:F must not appear in the corners.
+func TestExpand_MultiAreaAnchorUsesFirstAreaOnly(t *testing.T) {
+	g := newFakeGrid().fill(1, 1, 4, 3) // A1:C4 — the first area's block
+	g.fill(1, 5, 1, 2)                  // E1:F1 — the second area, a separate island
+
+	anchor := wrapRange(&fakeCell{
+		g: g, kind: "range",
+		row: 1, col: 1, rows: 1, cols: 3, // first area: A1:C1
+		multiAreaAddr: "$A$1:$C$1,$E$1:$F$1",
+	})
+
+	addr, corners := expandedAddress(t, g, anchor, "down")
+	if want := "$A$1:$C$4"; addr != want {
+		t.Errorf("Expand(down) on a multi-area anchor: got %s, want %s", addr, want)
+	}
+	if want := [2]string{"$A$1", "$C$4"}; corners != want {
+		t.Errorf("Worksheet.Range corners: got %v, want %v (E:F must be absent)", corners, want)
 	}
 }
 

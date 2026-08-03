@@ -179,9 +179,13 @@ type OptionedRange interface {
 	// auto-resizing to fit — the write-direction mirror of Get. Supported
 	// sources:
 	//
-	//   - []T (T struct)  — one row per element, exported fields in
-	//     declaration order. With Header(true) a header row of field names
-	//     is written first.
+	//   - []T (T struct)  — one row per element, one column per flattened
+	//     exported leaf field in declaration order: anonymous embedded structs
+	//     are expanded in place, while a named struct field and an embedded
+	//     time.Time each stay a single value cell. With Header(true) a header
+	//     row of those leaf names is written first — and because a leaf's name
+	//     is also its Go promoted name, the grid reads straight back through
+	//     Options(Header(true)).Get.
 	//   - [][]… 2-D slices — written as a rows×cols block.
 	//   - []… 1-D slices   — written as a single row.
 	//   - scalars          — plain single-cell write (no resize).
@@ -262,6 +266,24 @@ func (o *optionedRange) effectiveRange() (Range, error) {
 // guarded independently. The guard is a three-rung ladder, not a single probe
 // — see endpointCell for what the second rung buys.
 //
+// # Multi-area anchors
+//
+// A multi-area anchor (`Range("A1:C1,E1:F1")`, or any comma-joined address) is
+// reduced to its FIRST AREA and the result is always ONE rectangle. That is not
+// a choice made here: Excel itself reports `Cells(1,1)`, `Rows.Count` and
+// `Columns.Count` for the first area only, and those are the three values the
+// expansion consumes. No error is returned.
+//
+// Returning an error was considered and REJECTED. xlwings has no Areas concept
+// at all, and `_xlwindows.Range` rebuilds any range from its first-area coords
+// (`coords` = sheet/row/column/Rows.Count/Columns.Count, then
+// `Range(Cells(row, col), Cells(row+nrows-1, col+ncols-1))`), so upstream
+// rectangularizes a multi-area range even more aggressively than sugar does.
+// Erroring would therefore both break every caller that passes a multi-area
+// address today and move sugar away from the behavior it is modelled on. sugar
+// exposes no `Areas` API, so there is nothing else to reconcile.
+// Pinned by TestExpand_MultiAreaAnchorUsesFirstAreaOnly.
+//
 // Implementation note: Excel COM accepts string addresses for the
 // `Worksheet.Range(cell1, cell2)` form, and go-ole's Invoke dispatcher
 // likewise marshals strings as `VT_BSTR`. Marshalling chain-wrapped
@@ -310,6 +332,11 @@ func applyExpand(anchor Range, direction string) (Range, error) {
 // silently truncates the read (columns B and C would vanish with err == nil).
 // xlwings' VerticalExpander does the same, ending its range at
 // `(end_row, rng.column + rng.shape[1] - 1)`.
+//
+// On a multi-area anchor every input this reads — Cells(1,1) and the crossSpan
+// counts — is first-area-only in Excel, so the result is the first area's block
+// grown in `direction`, as one rectangle. See applyExpand for why that is
+// deliberate and why it is not an error.
 func expandFromEnd(anchor Range, direction int32) (Range, error) {
 	origin := anchor.Cells(1, 1)
 	startAddr, err := origin.Address()
@@ -343,6 +370,9 @@ func expandFromEnd(anchor Range, direction int32) (Range, error) {
 // growing right. That is the span the expanded rectangle must preserve. Other
 // directions report 1 (no cross-axis widening); "table" derives both extents
 // from the data block itself and never calls this.
+//
+// On a multi-area anchor Excel's Rows.Count / Columns.Count describe the FIRST
+// AREA, so that is the span preserved here — see applyExpand.
 func crossSpan(anchor Range, direction int32) (int, error) {
 	var (
 		span int32
@@ -552,7 +582,7 @@ func (o *optionedRange) Get(dst interface{}) error {
 	elem := dv.Elem()
 	if elem.Kind() == reflect.Slice {
 		et := elem.Type().Elem()
-		if et.Kind() == reflect.Struct && et != reflect.TypeOf(time.Time{}) {
+		if et.Kind() == reflect.Struct && et != timeType {
 			if o.opts.header {
 				return decodeStructSlice(elem, raw, o.opts.dateFormat)
 			}
@@ -581,7 +611,7 @@ func (o *optionedRange) Set(src interface{}) error {
 	}
 	et := rv.Type().Elem()
 	switch {
-	case et.Kind() == reflect.Struct && et != reflect.TypeOf(time.Time{}):
+	case et.Kind() == reflect.Struct && et != timeType:
 		grid, err := structRowsToGrid(rv, o.opts.header)
 		if err != nil {
 			return err
@@ -615,17 +645,116 @@ func (o *optionedRange) resizeAndSet(rows, cols int, v interface{}) error {
 	return o.rng.Resize(rows, cols).SetValue(v).Err()
 }
 
-// structRowsToGrid flattens a slice of structs into a [][]interface{} —
-// exported fields in declaration order, optionally preceded by a header row
-// of field names. The write-direction mirror of decodeStructSlice /
-// decodeStructSlicePositional.
+// timeType is the reflect.Type of time.Time — the one struct the conversion
+// layer treats as a scalar cell value everywhere (see Get's struct-slice
+// detection, Set's element-type switch and structFields' leaf rule).
+var timeType = reflect.TypeOf(time.Time{})
+
+// structFields returns the flattened, ordered leaf fields of st: exported
+// top-level fields in declaration order, with ANONYMOUS embedded structs
+// expanded depth-first in place. Each returned StructField carries the full
+// multi-level .Index path, so item.FieldByIndex(f.Index) reaches the leaf.
+//
+// It is the single field-collection rule shared by the two write/positional-read
+// sites, and it is deliberately congruent with what the header path
+// (decodeStructSlice) gets from FieldByName / FieldByNameFunc — which traverse
+// embedded structs and already return a multi-level Index. Before this existed
+// there were three rules: the header path flattened, while the positional decode
+// and the Set grid builder both scanned only st.NumField(), so an anonymous
+// embedded struct became ONE column and then failed hard ("cannot assign
+// float64 to Base" on read, "unsupported cell type" on write). Nothing worked on
+// either of those paths, which is why unifying them cannot regress a success.
+//
+// Three carve-outs, each of which would otherwise break behaviour that works:
+//
+//  1. time.Time is a LEAF. It is a struct with no exported fields, so expanding
+//     it would contribute zero columns and silently drop the field — yet an
+//     embedded time.Time decodes correctly today, because AssignableTo matches
+//     at field level. (Carve-out 3 would catch time.Time as well, since it has
+//     no exported leaves, so removing THIS test alone changes no output —
+//     verified by mutation. It is kept as the named, intentional rule: the
+//     conversion layer treats time.Time as a scalar everywhere else too, and a
+//     future time.Time with an exported field must not silently re-shape every
+//     grid.)
+//  2. Only ANONYMOUS embedded fields expand. A named struct field stays one
+//     cell, matching Go's promotion rule and the header path, which cannot see
+//     inside it either. Embedded *pointers* to structs are also leaves: the
+//     header path reaches through them via FieldByIndexErr, but a write has no
+//     sane column count for a nil one.
+//  3. An embedded struct with no exported leaves stays a single column rather
+//     than vanishing, so the surrounding column indices never shift silently.
+//
+// Ambiguity is refused, not resolved. When a flattened leaf's promoted name does
+// not resolve back through st.FieldByName to the same field — two embeds sharing
+// a leaf name (FieldByName reports not-ok), or an outer field shadowing an
+// embedded one — Set would write a column Get could not read back into the same
+// place. Inventing a resolution the header path does not share is exactly how
+// the three rules diverged in the first place, so such a struct is an error.
+func structFields(st reflect.Type) ([]reflect.StructField, error) {
+	var out []reflect.StructField
+	collectStructFields(st, nil, &out)
+	for _, f := range out {
+		g, ok := st.FieldByName(f.Name)
+		if !ok || !sameIndex(g.Index, f.Index) {
+			return nil, fmt.Errorf(
+				"struct %s: field %q is ambiguous or shadowed under Go's field-promotion "+
+					"rules, so a header column written for it cannot be read back — "+
+					"rename it or drop the embedding", st, f.Name)
+		}
+	}
+	return out, nil
+}
+
+// collectStructFields is structFields' depth-first walker. prefix is the Index
+// path of the embedded chain currently being expanded.
+func collectStructFields(st reflect.Type, prefix []int, out *[]reflect.StructField) {
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i)
+		if f.Anonymous && f.Type.Kind() == reflect.Struct && f.Type != timeType {
+			before := len(*out)
+			collectStructFields(f.Type, append(prefix, i), out)
+			if len(*out) > before {
+				continue
+			}
+			// Carve-out 3: no exported leaves inside — fall through and keep
+			// the embedded struct itself as one column.
+		}
+		if f.PkgPath != "" {
+			// Unexported and not expandable. (An unexported *embedded* type is
+			// still expanded above: its exported leaves are settable.)
+			continue
+		}
+		leaf := f
+		leaf.Index = append(append([]int{}, prefix...), i)
+		*out = append(*out, leaf)
+	}
+}
+
+func sameIndex(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// structRowsToGrid flattens a slice of structs into a [][]interface{} — the
+// flattened exported leaf fields (see structFields) in declaration order,
+// optionally preceded by a header row of field names. The write-direction mirror
+// of decodeStructSlice / decodeStructSlicePositional.
+//
+// The header row carries each leaf's own name, which is also its Go *promoted*
+// name — so decodeStructSlice's FieldByName lookup resolves the column straight
+// back to the field it came from and the Set -> Get round trip closes.
 func structRowsToGrid(rv reflect.Value, includeHeader bool) ([][]interface{}, error) {
 	st := rv.Type().Elem()
-	var fields []reflect.StructField
-	for fi := 0; fi < st.NumField(); fi++ {
-		if st.Field(fi).PkgPath == "" { // exported only
-			fields = append(fields, st.Field(fi))
-		}
+	fields, err := structFields(st)
+	if err != nil {
+		return nil, fmt.Errorf("Options.Set: %w", err)
 	}
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("Options.Set: struct %s has no exported fields", st)
@@ -642,7 +771,17 @@ func structRowsToGrid(rv reflect.Value, includeHeader bool) ([][]interface{}, er
 		item := rv.Index(r)
 		row := make([]interface{}, len(fields))
 		for i, f := range fields {
-			row[i] = item.FieldByIndex(f.Index).Interface()
+			// FieldByIndexErr (not FieldByIndex) so a leaf reached through a nil
+			// embedded pointer writes an empty cell instead of panicking — the
+			// same tolerance decodeStructSlice already has on the read side.
+			// (structFields does not expand pointer embeds today, so this is a
+			// guard against a future widening, not a live path.)
+			fv, err := item.FieldByIndexErr(f.Index)
+			if err != nil {
+				row[i] = nil
+				continue
+			}
+			row[i] = fv.Interface()
 		}
 		grid = append(grid, row)
 	}
@@ -817,26 +956,35 @@ func decodeStructSlice(dst reflect.Value, raw [][]interface{}, dateFormat string
 }
 
 // decodeStructSlicePositional decodes every row of raw into one struct,
-// mapping column 0 to the struct's first exported field, column 1 to the
-// second, and so on — the Header(false) counterpart of decodeStructSlice.
+// mapping column 0 to the struct's first flattened exported leaf field, column 1
+// to the second, and so on — the Header(false) counterpart of decodeStructSlice.
 // Extra columns are ignored; missing columns leave fields at their zero
 // value.
+//
+// The column list comes from structFields, the same collector structRowsToGrid
+// writes with, so a positional Set and a positional Get agree column for column
+// (and anonymous embedded structs are flattened here exactly as the header path
+// flattens them via FieldByName).
 func decodeStructSlicePositional(dst reflect.Value, raw [][]interface{}, dateFormat string) error {
 	st := dst.Type().Elem()
-	var fields []int
-	for fi := 0; fi < st.NumField(); fi++ {
-		if st.Field(fi).PkgPath == "" { // exported only
-			fields = append(fields, fi)
-		}
+	fields, err := structFields(st)
+	if err != nil {
+		return err
 	}
 	out := reflect.MakeSlice(dst.Type(), 0, len(raw))
 	for r, row := range raw {
 		item := reflect.New(st).Elem()
-		for ci, fi := range fields {
+		for ci, f := range fields {
 			if ci >= len(row) {
 				break
 			}
-			if err := assignField(item.Field(fi), row[ci], dateFormat); err != nil {
+			// FieldByIndexErr so a leaf behind a nil embedded pointer is skipped
+			// rather than panicking, matching decodeStructSlice.
+			fv, err := item.FieldByIndexErr(f.Index)
+			if err != nil {
+				continue
+			}
+			if err := assignField(fv, row[ci], dateFormat); err != nil {
 				return fmt.Errorf("row %d, column %d: %w", r, ci, err)
 			}
 		}
@@ -873,11 +1021,52 @@ func assign(dst reflect.Value, val interface{}) error {
 		dst.Set(vv)
 		return nil
 	}
+	if setStringFromInteger(dst, vv, val) {
+		return nil
+	}
 	if vv.Type().ConvertibleTo(dst.Type()) {
 		dst.Set(vv.Convert(dst.Type()))
 		return nil
 	}
 	return fmt.Errorf("Options.Get: cannot assign %T to %s", val, dst.Type())
+}
+
+// setStringFromInteger writes an INTEGER-kinded source into a string-kinded
+// destination as its decimal digits and reports true; it reports false (writing
+// nothing) for every other type pairing.
+//
+// This guard must run BEFORE the ConvertibleTo branch in assign/assignField,
+// because Go's reflect Convert reads an integer -> string conversion as
+// "the string containing that CODE POINT", not "the digits": int32(65) becomes
+// "A", int(0) becomes "\x00", int64(1) becomes "\x01", and time.Duration(1e9)
+// becomes U+FFFD garbage. Nothing in a spreadsheet pipeline wants that, and it
+// used to happen silently — the reachable trigger is Options(Empty(0)), whose
+// substituted int 0 landed in string struct fields as a NUL byte.
+//
+// It is keyed on the SOURCE kind, which is what keeps it narrow: []byte and
+// []rune are reflect.Slice (not Uint8/Int32), so `[]byte("hi") -> "hi"` still
+// goes through ConvertibleTo unchanged; a named string source keeps its
+// conversion; float sources were never ConvertibleTo string and still reach
+// assignField's Sprint fallback. dst.Kind() (not dst.Type()) is tested so a
+// NAMED string destination is covered too — SetString works on those.
+//
+// fmt.Sprint rather than strconv so a named integer type with a String()
+// method renders sensibly (time.Duration -> "1s").
+//
+// This is a guard, not redundancy (AGENTS §5 rule 10): deleting it restores the
+// rune conversion, and `TestAssign_IntegerIntoStringIsDigitsNotRune` /
+// `TestAssignField_EmptyIntIntoStringField` are what say so.
+func setStringFromInteger(dst reflect.Value, vv reflect.Value, val interface{}) bool {
+	if dst.Kind() != reflect.String {
+		return false
+	}
+	switch vv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		dst.SetString(fmt.Sprint(val))
+		return true
+	}
+	return false
 }
 
 // assignField mirrors `assign` but knows the dateFormat hint for time.Time
@@ -902,6 +1091,13 @@ func assignField(dst reflect.Value, val interface{}, dateFormat string) error {
 	vv := reflect.ValueOf(val)
 	if vv.Type().AssignableTo(dst.Type()) {
 		dst.Set(vv)
+		return nil
+	}
+	// Integer source into a string destination: digits, never a rune. Must sit
+	// ahead of ConvertibleTo — see setStringFromInteger. (The Sprint fallback
+	// below would produce the same text, but it is unreachable for integer
+	// sources because ConvertibleTo matches them first.)
+	if setStringFromInteger(dst, vv, val) {
 		return nil
 	}
 	if vv.Type().ConvertibleTo(dst.Type()) {

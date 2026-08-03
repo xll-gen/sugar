@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	// Embed the IANA zone database so LoadLocation works deterministically on
@@ -714,6 +715,87 @@ func TestNeedsArrayEncoding(t *testing.T) {
 	for _, c := range cases {
 		if got := needsArrayEncoding(c.in); got != c.want {
 			t.Errorf("needsArrayEncoding(%T) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestStringCell_EmbeddedNUL is a NO-REGRESSION pin, not a bug repro: it passes
+// against the pre-optimization code and must keep passing.
+//
+// The BSTR path preserves embedded NULs because SysAllocStringLen takes an
+// explicit code-unit count, and the length prefix carries it back. Any
+// "optimization" that reaches for syscall.UTF16FromString / UTF16PtrFromString
+// breaks this — those reject (or truncate at) an interior NUL, which is the
+// exact defect class the xll-gen string-return ladder was cleaned of. So the
+// test exists to make that mistake loud.
+func TestStringCell_EmbeddedNUL(t *testing.T) {
+	cells := []string{
+		"a\x00b",
+		"\x00leading",
+		"trailing\x00",
+		"\x00",
+		"a\x00\x00b",
+	}
+	for _, want := range cells {
+		v, err := encodeVariantArray([]interface{}{want})
+		if err != nil {
+			t.Fatalf("encode %q: %v", want, err)
+		}
+		got, err := decodeVariantArray(v)
+		v.Clear()
+		if err != nil {
+			t.Fatalf("decode %q: %v", want, err)
+		}
+		row, ok := got.([]interface{})
+		if !ok || len(row) != 1 {
+			t.Fatalf("decode %q: got %#v", want, got)
+		}
+		s, ok := row[0].(string)
+		if !ok {
+			t.Fatalf("decode %q: cell is %T, want string", want, row[0])
+		}
+		if s != want {
+			t.Errorf("round trip %q -> %q (%d bytes, want %d)", want, s, len(s), len(want))
+		}
+	}
+}
+
+// TestStringCell_NonBMPAndLoneSurrogate pins the UTF-16 arithmetic the fast
+// string paths depend on. Two things it catches that ASCII cannot:
+//
+//   - Wrong length arithmetic (bytes vs code units) — invisible on ASCII,
+//     silently truncating or over-reading every non-BMP cell.
+//   - A different surrogate policy. Go's own conversions are the reference:
+//     []rune / range over an invalid UTF-8 byte yields U+FFFD, and
+//     utf16.Decode maps an unpaired surrogate to U+FFFD. The decoded cell must
+//     equal what those produce, exactly.
+func TestStringCell_NonBMPAndLoneSurrogate(t *testing.T) {
+	cases := []string{
+		"\U0001F600",               // non-BMP emoji: one rune, two code units
+		"a\U0001F600b",             // surrogate pair between BMP chars
+		"\U0001F600\U0001F601",     // two pairs back to back
+		"\xed\xa0\x80",             // WTF-8 lone high surrogate: invalid UTF-8
+		"ok\xed\xb0\x80",           // lone LOW surrogate after ASCII
+		"\xff\xfe",                 // invalid UTF-8, not a surrogate
+		"한글",                       // BMP multi-byte
+		"\U0001F600\x00\U0001F601", // non-BMP either side of a NUL
+	}
+	for _, in := range cases {
+		// The reference: what Go's own UTF-16 round trip produces.
+		want := string(utf16.Decode(utf16.Encode([]rune(in))))
+
+		v, err := encodeVariantArray([]interface{}{in})
+		if err != nil {
+			t.Fatalf("encode %q: %v", in, err)
+		}
+		got, err := decodeVariantArray(v)
+		v.Clear()
+		if err != nil {
+			t.Fatalf("decode %q: %v", in, err)
+		}
+		s := got.([]interface{})[0].(string)
+		if s != want {
+			t.Errorf("round trip %q: got %q (% x), want %q (% x)", in, s, s, want, want)
 		}
 	}
 }

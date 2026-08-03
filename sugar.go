@@ -92,6 +92,26 @@ func Missing() *ole.VARIANT {
 	return &v
 }
 
+// IsMissing reports whether v is the COM omitted-optional-parameter placeholder
+// produced by Missing() — a VT_ERROR VARIANT carrying DISP_E_PARAMNOTFOUND.
+// Any other value, including a real VARIANT (even another VT_ERROR one, such as
+// a #DIV/0! worksheet cell error), is not Missing.
+//
+// Use it instead of a `v.(*ole.VARIANT)` type assertion whenever code decides
+// whether an argument was omitted: a type-only test calls every hand-built
+// VARIANT "omitted" and drops it from the call. This is a package function
+// rather than a Chain method on purpose — Chain is an exported interface with
+// in-tree implementers, so adding a method to it would be a breaking change.
+//
+// The VT flag bits are masked, so a BYREF/flagged VT_ERROR carrying the marker
+// SCODE is still recognised; Val is compared as a uint32 because the SCODE is
+// an unsigned HRESULT stored in an int64 field (same convention as
+// decodeVariantScalar's VT_ERROR case).
+func IsMissing(v interface{}) bool {
+	p, ok := v.(*ole.VARIANT)
+	return ok && p != nil && p.VT&vtTypeMask == ole.VT_ERROR && uint32(p.Val) == dispEParamNotFound
+}
+
 // Error returns a Chain that carries err and nothing else. Useful for typed
 // wrappers that must surface a validation error through the fluent chain
 // contract before any COM call happens.

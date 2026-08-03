@@ -5,7 +5,6 @@ package excel
 import (
 	"fmt"
 
-	"github.com/go-ole/go-ole"
 	"github.com/xll-gen/sugar"
 )
 
@@ -26,10 +25,21 @@ func callOptional(c sugar.Chain, method string, leading []interface{}, optional 
 // trimTrailingMissing drops trailing sugar.Missing() placeholders from a
 // positional COM argument list so that simple calls collapse to their shortest
 // form (down to and including the empty list when every argument is omitted).
+//
+// The test is sugar.IsMissing — the marker's VALUE — not `args[last].(*ole.VARIANT)`.
+// The type-only form dropped *any* trailing VARIANT, so a wrapper that
+// hand-builds one for a COM slot that rejects loose Go types (or that forwards a
+// VT_ERROR worksheet cell error) silently lost that argument. Nothing in the
+// tree hits that today (SaveAs / Workbooks.Open / Close only ever pass
+// sugar.Missing() or plain Go values), but callOptional is the documented path
+// for the PasteSpecial/Run/Copy wrappers still to come.
+//
+// The DISP_E_PARAMNOTFOUND literal deliberately stays in the sugar root: a
+// second copy here is the one that drifts.
 func trimTrailingMissing(args []interface{}) []interface{} {
 	last := len(args) - 1
 	for last >= 0 {
-		if _, isMissing := args[last].(*ole.VARIANT); !isMissing {
+		if !sugar.IsMissing(args[last]) {
 			break
 		}
 		last--

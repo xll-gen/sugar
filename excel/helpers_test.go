@@ -7,9 +7,13 @@
 package excel
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-ole/go-ole"
+	"github.com/xll-gen/sugar"
 )
 
 // TestStringFromVariant_RejectsArrays pins the getString fix: a scalar string
@@ -75,6 +79,48 @@ func TestStringFromVariant_PassesScalars(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("stringFromVariant(%v (%T)) = %q; want %q", tc.v, tc.v, got, tc.want)
 		}
+	}
+}
+
+// TestTrimTrailingMissing pins the optional-argument trim to the VALUE of the
+// omitted-optional marker, not to the *ole.VARIANT type. A wrapper that hands
+// callOptional a hand-built VARIANT for a picky COM slot must keep that
+// argument; a type-only check silently dropped it.
+func TestTrimTrailingMissing(t *testing.T) {
+	real1 := ole.NewVariant(ole.VT_R8, 0)
+	realVariant := &real1
+	cases := []struct {
+		name string
+		args []interface{}
+		want []interface{}
+	}{
+		{"trailing markers dropped", []interface{}{"path", sugar.Missing(), sugar.Missing()}, []interface{}{"path"}},
+		{"all markers trim to empty", []interface{}{sugar.Missing(), sugar.Missing(), sugar.Missing()}, []interface{}{}},
+		{"real trailing VARIANT is kept", []interface{}{"path", sugar.Missing(), realVariant}, []interface{}{"path", sugar.Missing(), realVariant}},
+		{"real VARIANT before a marker survives", []interface{}{"path", realVariant, sugar.Missing()}, []interface{}{"path", realVariant}},
+		{"no optionals", []interface{}{"path"}, []interface{}{"path"}},
+		{"empty list", []interface{}{}, []interface{}{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := trimTrailingMissing(tc.args)
+			if len(got) != len(tc.want) {
+				t.Fatalf("trimTrailingMissing kept %d args, want %d (%v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				// Missing() allocates a fresh VARIANT per call, so compare the
+				// marker positionally by value and everything else by identity.
+				if sugar.IsMissing(tc.want[i]) {
+					if !sugar.IsMissing(got[i]) {
+						t.Errorf("arg %d = %v, want the Missing marker", i, got[i])
+					}
+					continue
+				}
+				if !reflect.DeepEqual(got[i], tc.want[i]) {
+					t.Errorf("arg %d = %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"runtime"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -42,6 +44,7 @@ var (
 	procSafeArrayUnaccessData = oleaut32.NewProc("SafeArrayUnaccessData")
 	procSafeArrayDestroy      = oleaut32.NewProc("SafeArrayDestroy")
 	procVarR8FromDec          = oleaut32.NewProc("VarR8FromDec")
+	procSysAllocStringLen     = oleaut32.NewProc("SysAllocStringLen")
 )
 
 // variantSize is the byte width of a VARIANT as Go sees it (24 on amd64, 16 on
@@ -538,7 +541,9 @@ func scalarToVariant(val interface{}, out *ole.VARIANT) error {
 			*out = ole.NewVariant(ole.VT_BOOL, 0)
 		}
 	case string:
-		*out = ole.NewVariant(ole.VT_BSTR, int64(uintptr(unsafe.Pointer(ole.SysAllocStringLen(x)))))
+		// The BSTR handle is carried as an integer in Val, the same convention
+		// the SAFEARRAY handle uses — no uintptr -> unsafe.Pointer round trip.
+		*out = ole.NewVariant(ole.VT_BSTR, int64(bstrFromString(x)))
 	case int:
 		setNumericVariant(out, float64(x))
 	case int8:
@@ -681,6 +686,13 @@ type oleDecimal struct {
 func decodeVariantScalar(v *ole.VARIANT) interface{} {
 	byref := v.VT&ole.VT_BYREF != 0
 	switch v.VT & vtTypeMask {
+	case ole.VT_BSTR:
+		if byref {
+			// VT_BSTR|VT_BYREF stores a BSTR* — leave it to go-ole rather than
+			// reading a length prefix off the wrong pointer.
+			break
+		}
+		return bstrToString((*uint16)(*(*unsafe.Pointer)(unsafe.Pointer(&v.Val))))
 	case ole.VT_CY:
 		cy := v.Val
 		if byref {
@@ -718,6 +730,107 @@ func decodeVariantScalar(v *ole.VARIANT) interface{} {
 		return CellError{SCode: scode}
 	}
 	return v.Value()
+}
+
+// bstrFromString allocates a COM BSTR holding s, encoded as UTF-16, and returns
+// its handle as a uintptr (the same convention the SAFEARRAY handle uses: the
+// memory is COM-allocated, so Go's GC never moves or frees it, and it keeps the
+// value out of go vet's unsafe.Pointer rules).
+//
+// It replaces go-ole's SysAllocStringLen, whose body is
+// `utf16.Encode([]rune(v + "\x00"))` — three Go allocations (the concatenation,
+// the []rune, the []uint16) per string cell before the oleaut32 call. A bulk
+// grid write runs this once per cell, so those allocations are the write path's
+// floor. Encoding straight into one right-sized buffer removes two of them.
+//
+// The capacity is exact-or-generous with no possible regrowth: a string's UTF-8
+// byte length is always >= its UTF-16 code-unit count (1-, 2- and 3-byte
+// sequences each become one unit; a 4-byte sequence becomes a surrogate pair;
+// an invalid byte becomes one U+FFFD unit).
+//
+// TWO PROPERTIES THAT MUST NOT REGRESS, both pinned by tests:
+//
+//   - Embedded NULs survive. SysAllocStringLen takes an explicit code-unit
+//     COUNT, so a NUL inside the string is data, not a terminator. Do NOT
+//     reach for syscall.UTF16FromString / UTF16PtrFromString here: they reject
+//     an interior NUL, and silently truncating at one is the defect class this
+//     ecosystem has already had to remove once.
+//     Pinned by TestStringCell_EmbeddedNUL.
+//   - Invalid UTF-8 becomes U+FFFD, exactly as `[]rune(s)` did — `for _, r :=
+//     range s` yields the same replacement runes, so the output is byte-identical
+//     to the previous implementation by construction.
+//     Pinned by TestStringCell_NonBMPAndLoneSurrogate.
+//
+// Ownership: the returned BSTR is COM-allocated. Storing it in a VARIANT
+// transfers ownership to whoever clears that VARIANT (VariantClear /
+// SafeArrayDestroy); SysAllocStringLen COPIES the units, so the Go buffer is
+// free to be collected immediately and is never aliased by the VARIANT.
+func bstrFromString(s string) uintptr {
+	units := make([]uint16, 0, len(s)+1)
+	for _, r := range s {
+		units = utf16.AppendRune(units, r)
+	}
+	if len(units) == 0 {
+		// An empty string still needs a valid (empty) BSTR. SysAllocStringLen
+		// with a NULL pointer and length 0 allocates exactly that.
+		bstr, _, _ := procSysAllocStringLen.Call(0, 0)
+		return bstr
+	}
+	bstr, _, _ := procSysAllocStringLen.Call(uintptr(unsafe.Pointer(&units[0])), uintptr(len(units)))
+	// LazyProc.Call takes ...uintptr, so the unsafe.Pointer -> uintptr
+	// conversion above does NOT get the syscall.Syscall liveness provision (the
+	// pointer is laundered through a []uintptr). Keep the buffer reachable until
+	// oleaut32 has finished copying out of it.
+	runtime.KeepAlive(units)
+	return bstr
+}
+
+// bstrToString converts a BSTR to a Go string without leaving Go.
+//
+// go-ole's BstrToString path (its ToString -> UTF16PtrToString) costs, per
+// string cell, a `SysStringLen` LazyProc.Call, a []uint16 allocation, a
+// code-unit-at-a-time copy loop, a []rune allocation inside utf16.Decode and the
+// final string allocation. Since string grids are dominated by exactly that
+// per-cell work (a 500x500 string read spent ~35% of its end-to-end time in
+// decode even after the bulk-transfer change), this reads the length straight off
+// the BSTR header and decodes the COM-owned code units in place: one syscall and
+// one allocation-plus-copy less per cell, byte-identical output.
+//
+// # Why the length prefix read is safe
+//
+// A BSTR is a pointer to NUL-terminated UTF-16 data preceded by a 4-byte
+// BYTE-count prefix (not a code-unit count — halve it). That layout is
+// guaranteed by oleaut32 for any pointer that came out of SysAllocString* /
+// a VT_BSTR VARIANT, and this function is only ever reached from
+// decodeVariantScalar under `VT&VT_TYPEMASK == VT_BSTR` with VT_BYREF excluded.
+// It must stay that way: called on a non-BSTR pointer, the prefix read is an
+// out-of-bounds access four bytes behind an arbitrary allocation.
+//
+// # Why the result cannot dangle
+//
+// `units` aliases COM-owned memory (for array cells, memory owned by the
+// SAFEARRAY and only valid while the accessVariantData lock is held).
+// utf16.Decode COPIES into a fresh []rune and string() copies again, so the
+// returned string owns its bytes. An unsafe.String over `units` would be one
+// allocation cheaper and would dangle — do not.
+//
+// Surrogate handling is utf16.Decode's, i.e. Go's own: an unpaired surrogate
+// becomes U+FFFD, matching what go-ole produced. Embedded NULs survive, because
+// the length comes from the prefix and not from a terminator scan.
+func bstrToString(p *uint16) string {
+	if p == nil {
+		// A NULL BSTR is the empty string by COM convention (SysStringLen(NULL)
+		// is 0), which is also what go-ole's BstrToString returns.
+		return ""
+	}
+	// The 4-byte prefix sits immediately before the data. Pointer arithmetic in
+	// a single expression, per the unsafe.Pointer rules go vet enforces.
+	nBytes := *(*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) - 4))
+	if nBytes < 2 {
+		return ""
+	}
+	units := unsafe.Slice(p, nBytes/2)
+	return string(utf16.Decode(units))
 }
 
 // getElement reads one VARIANT cell from a VT_ARRAY|VT_VARIANT SAFEARRAY at

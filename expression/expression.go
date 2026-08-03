@@ -71,17 +71,50 @@ func Compile(expression string) (*Program, error) {
 // documentation for the supported env types and the ownership contract of
 // the *ole.IDispatch env path.
 func (p *Program) Run(env interface{}) (interface{}, error) {
+	// The *ole.IDispatch arm stays SEPARATE and does not use visitorFor: its result
+	// may be a COM object that must outlive the arena, so the Store/Value choice
+	// has to sit textually next to the release (see runInArena). Every other arm
+	// shares the one env-type switch.
+	if d, ok := env.(*ole.IDispatch); ok {
+		return runInArena(d, p.node)
+	}
+	v, cleanup, err := visitorFor(env)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return finishEval(v, p.node)
+}
+
+// visitorFor builds the comVisitor for an env value, together with the cleanup
+// that must run when evaluation is done. It is the single definition of "which
+// env types are supported"; Run and Put both went through their own copy of this
+// switch, so a new env type had to be added twice and the two could disagree.
+//
+// OWNERSHIP WARNING: a caller that lets a RESULT escape the arena must
+// materialize it BEFORE cleanup runs. Run does that in runInArena -- which
+// deliberately does NOT go through this function, so its Store/Value ordering
+// stays textually intact next to the release. Put has no escaping result: its
+// arena exists only for intermediates, so `defer cleanup()` is correct there.
+//
+// Only the *ole.IDispatch arm returns a cleanup that does anything. That asymmetry
+// is the whole risk surface: replacing that one closure with noCleanup is a silent
+// COM refcount leak that no behavioural assertion can see, which is why
+// TestPut_RawIDispatchArenaNoLeak counts references rather than checking results.
+func visitorFor(env interface{}) (*comVisitor, func(), error) {
+	noCleanup := func() {}
 	switch v := env.(type) {
 	case sugar.Chain:
-		return finishEval(&comVisitor{initialChain: v}, p.node)
+		return &comVisitor{initialChain: v}, noCleanup, nil
 	case *ole.IDispatch:
-		return runInArena(v, p.node)
+		ctx := sugar.NewContext(nil)
+		return &comVisitor{initialChain: ctx.From(v)}, func() { ctx.Release() }, nil
 	case map[string]interface{}:
-		return finishEval(&comVisitor{envMap: v}, p.node)
+		return &comVisitor{envMap: v}, noCleanup, nil
 	case nil:
-		return finishEval(&comVisitor{}, p.node)
+		return &comVisitor{}, noCleanup, nil
 	default:
-		return nil, fmt.Errorf("expression: unsupported env type %T", env)
+		return nil, nil, fmt.Errorf("expression: unsupported env type %T", env)
 	}
 }
 
@@ -196,21 +229,13 @@ func Put(obj interface{}, expression string, value interface{}) error {
 		return err
 	}
 
-	switch v := obj.(type) {
-	case sugar.Chain:
-		return putNode(&comVisitor{initialChain: v}, p.node, value)
-	case *ole.IDispatch:
-		// Same arena contract as Run: intermediates are released on return.
-		ctx := sugar.NewContext(nil)
-		defer ctx.Release()
-		return putNode(&comVisitor{initialChain: ctx.From(v)}, p.node, value)
-	case map[string]interface{}:
-		return putNode(&comVisitor{envMap: v}, p.node, value)
-	case nil:
-		return putNode(&comVisitor{}, p.node, value)
-	default:
-		return fmt.Errorf("expression: unsupported env type %T", obj)
+	v, cleanup, err := visitorFor(obj)
+	if err != nil {
+		return err
 	}
+	// Put has no escaping result, so releasing the arena on return is safe.
+	defer cleanup()
+	return putNode(v, p.node, value)
 }
 
 func putNode(v *comVisitor, node ast.Node, value interface{}) error {
@@ -350,6 +375,14 @@ func (v *comVisitor) eval(node ast.Node) (interface{}, error) {
 		return evalUnary(n.Operator, val)
 
 	case *ast.BinaryNode:
+		// && / || / and / or are handled HERE, before either side is evaluated,
+		// because they must SHORT-CIRCUIT. evalBinary only ever sees two operands
+		// that have already been evaluated, so implementing them there would give
+		// the right values while still issuing the un-taken branch's COM round
+		// trips -- and surfacing any error they raise. See evalLogical.
+		if isLogicalOp(n.Operator) {
+			return v.evalLogical(n.Operator, n.Left, n.Right)
+		}
 		left, err := v.eval(n.Left)
 		if err != nil {
 			return nil, err
@@ -447,7 +480,15 @@ func evalUnary(op string, val interface{}) (interface{}, error) {
 }
 
 func evalBinary(op string, left, right interface{}) (interface{}, error) {
+	// An OBJECT operand is not comparable, and this has to be decided BEFORE the
+	// Value() unwrap below. A dispatch chain's Value() answers (nil, nil) rather
+	// than an error, so `obj == nil` would unwrap to nil and cheerfully report
+	// TRUE -- i.e. "this live COM object is empty". Callers testing a cell for
+	// emptiness would get a confident wrong answer.
+	leftIsObject := false
+	rightIsObject := false
 	if lc, ok := left.(sugar.Chain); ok {
+		leftIsObject = lc.IsDispatch()
 		var err error
 		left, err = lc.Value()
 		if err != nil {
@@ -455,11 +496,15 @@ func evalBinary(op string, left, right interface{}) (interface{}, error) {
 		}
 	}
 	if rc, ok := right.(sugar.Chain); ok {
+		rightIsObject = rc.IsDispatch()
 		var err error
 		right, err = rc.Value()
 		if err != nil {
 			return nil, err
 		}
+	}
+	if leftIsObject || rightIsObject {
+		return nil, fmt.Errorf("unsupported binary operation: COM object %s operand (object operands are not comparable; compare a property of it instead)", op)
 	}
 
 	lv := reflect.ValueOf(left)
@@ -487,7 +532,166 @@ func evalBinary(op string, left, right interface{}) (interface{}, error) {
 		}
 	}
 
+	if isComparisonOp(op) {
+		if res, ok := evalComparison(op, left, right, lv, rv); ok {
+			return res, nil
+		}
+		// Fall through to the shared unsupported-operation error below, so an
+		// unorderable pairing reads the same way as an unknown operator.
+	}
+
 	return nil, fmt.Errorf("unsupported binary operation: %T %s %T", left, op, right)
+}
+
+// isLogicalOp reports whether op is one of the short-circuiting connectives.
+// Both spellings of each are accepted, matching the expr grammar this package
+// parses with.
+func isLogicalOp(op string) bool {
+	switch op {
+	case "&&", "||", "and", "or":
+		return true
+	}
+	return false
+}
+
+// evalLogical implements && / || / and / or with real short-circuit semantics.
+//
+// It MUST live here, called from eval's BinaryNode arm before the right-hand side
+// is touched -- not in evalBinary, which only ever sees two already-evaluated
+// operands. For a COM expression the difference is not academic: the un-taken
+// branch would still issue its COM round trips, and an error it raised would
+// propagate even though short-circuit semantics say that branch never ran.
+//
+// No truthiness coercion. A non-bool operand is an error, deliberately: this
+// package evaluates expressions over spreadsheet data, where "1" and "non-empty
+// string" are exactly the values a user would be surprised to see silently
+// treated as true.
+func (v *comVisitor) evalLogical(op string, leftNode, rightNode ast.Node) (interface{}, error) {
+	lv, err := v.eval(leftNode)
+	if err != nil {
+		return nil, err
+	}
+	lb, err := asBool(op, lv)
+	if err != nil {
+		return nil, err
+	}
+
+	// The short circuit itself: && with a false left and || with a true left
+	// answer WITHOUT evaluating the right node at all.
+	switch op {
+	case "&&", "and":
+		if !lb {
+			return false, nil
+		}
+	case "||", "or":
+		if lb {
+			return true, nil
+		}
+	}
+
+	rv, err := v.eval(rightNode)
+	if err != nil {
+		return nil, err
+	}
+	rb, err := asBool(op, rv)
+	if err != nil {
+		return nil, err
+	}
+	return rb, nil
+}
+
+// asBool unwraps a Chain result and requires a real bool.
+func asBool(op string, val interface{}) (bool, error) {
+	if ch, ok := val.(sugar.Chain); ok {
+		var err error
+		val, err = ch.Value()
+		if err != nil {
+			return false, err
+		}
+	}
+	b, ok := val.(bool)
+	if !ok {
+		return false, fmt.Errorf("unsupported binary operation: %T %s bool (no truthiness coercion)", val, op)
+	}
+	return b, nil
+}
+
+// compareOrdered applies one of the six operators to two values of the same
+// ordered type.
+//
+// The two INCLUSIVE operators are the ones worth reading twice: >= differs from >
+// only at equality, so a test suite whose >= rows are all false-direction cannot
+// tell the two apart. (That was the case here until boundary-true rows were
+// added -- the mutant survived.)
+func compareOrdered[T float64 | string](op string, a, b T) bool {
+	switch op {
+	case "==":
+		return a == b
+	case "!=":
+		return a != b
+	case "<":
+		return a < b
+	case "<=":
+		return a <= b
+	case ">":
+		return a > b
+	default: // ">="
+		return a >= b
+	}
+}
+
+// isComparisonOp reports whether op is one of the six comparisons.
+func isComparisonOp(op string) bool {
+	switch op {
+	case "==", "!=", "<", "<=", ">", ">=":
+		return true
+	}
+	return false
+}
+
+// evalComparison applies a comparison to two already-unwrapped operands, or
+// reports that the operand TYPES do not support it.
+//
+// The type rules are deliberately narrow, because the permissive alternatives are
+// all silently wrong on spreadsheet data:
+//   - numbers compare as float64 (the same toFloat coercion arithmetic uses), so
+//     int-vs-float mixes work;
+//   - strings compare lexicographically;
+//   - bools support EQUALITY ONLY -- "true < false" is a question with no answer;
+//   - nil supports equality only, which is the "is this cell empty" idiom;
+//   - every cross-type pairing is an ERROR, not a fmt.Sprint comparison.
+func evalComparison(op string, left, right interface{}, lv, rv reflect.Value) (interface{}, bool) {
+	eqOnly := op == "==" || op == "!="
+
+	// nil: equality only, and nil equals only nil.
+	if left == nil || right == nil {
+		if !eqOnly {
+			return nil, false
+		}
+		both := left == nil && right == nil
+		if op == "==" {
+			return both, true
+		}
+		return !both, true
+	}
+
+	if isNumber(lv) && isNumber(rv) {
+		return compareOrdered(op, toFloat(lv), toFloat(rv)), true
+	}
+	if lv.Kind() == reflect.String && rv.Kind() == reflect.String {
+		return compareOrdered(op, lv.String(), rv.String()), true
+	}
+	if lv.Kind() == reflect.Bool && rv.Kind() == reflect.Bool {
+		if !eqOnly {
+			return nil, false // bools are not ordered
+		}
+		if op == "==" {
+			return lv.Bool() == rv.Bool(), true
+		}
+		return lv.Bool() != rv.Bool(), true
+	}
+	// Mixed kinds (number vs string, string vs bool, number vs bool, ...).
+	return nil, false
 }
 
 func isNumber(v reflect.Value) bool {

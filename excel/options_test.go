@@ -191,6 +191,250 @@ func TestDecodeStructSlice_EmbeddedStruct(t *testing.T) {
 	}
 }
 
+// TestDecodeStructSlicePositional_EmbeddedStruct is the positional twin of the
+// test above. The two read paths used to disagree: the header path flattens
+// (FieldByName traverses embedded structs and yields a multi-level Index),
+// while the positional path scanned only st.NumField() and handed assignField a
+// whole struct destination — a hard error, "cannot assign float64 to Base".
+func TestDecodeStructSlicePositional_EmbeddedStruct(t *testing.T) {
+	type Base struct {
+		ID int
+	}
+	type Row struct {
+		Base
+		Name string
+	}
+	raw := [][]interface{}{
+		{1.0, "a"},
+		{2.0, "b"},
+	}
+	var out []Row
+	if err := decodeStructSlicePositional(reflect.ValueOf(&out).Elem(), raw, ""); err != nil {
+		t.Fatalf("decodeStructSlicePositional: %v", err)
+	}
+	want := []Row{
+		{Base: Base{ID: 1}, Name: "a"},
+		{Base: Base{ID: 2}, Name: "b"},
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Errorf("got %+v, want %+v", out, want)
+	}
+}
+
+// TestSet_StructRowsEmbeddedStruct is the write-direction mirror: the grid must
+// carry the promoted LEAF fields, one column each. Before the unification the
+// embedded struct went into a single cell and scalarToVariant rejected it with
+// "unsupported cell type".
+func TestSet_StructRowsEmbeddedStruct(t *testing.T) {
+	type Base struct {
+		ID int
+	}
+	type Row struct {
+		Base
+		Name string
+	}
+	fake := &fakeRange{}
+	or := &optionedRange{rng: fake, opts: rangeOptions{header: true}}
+	if err := or.Set([]Row{{Base{1}, "a"}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	want := [][]interface{}{
+		{"ID", "Name"},
+		{1, "a"},
+	}
+	if !reflect.DeepEqual(fake.setValue, want) {
+		t.Errorf("written grid: got %v, want %v", fake.setValue, want)
+	}
+	if fake.resizedRows != 2 || fake.resizedCols != 2 {
+		t.Errorf("resize: got %dx%d, want 2x2", fake.resizedRows, fake.resizedCols)
+	}
+}
+
+// TestSet_GetRoundTripEmbedded is the test that pins all THREE field-collection
+// rules agreeing: Set(Header(true)) writes the header row using the promoted
+// leaf names, and the header decode — which resolves those names through
+// FieldByName — must read the same struct back. It goes red if a later change
+// "fixes" only one path.
+func TestSet_GetRoundTripEmbedded(t *testing.T) {
+	type Base struct {
+		ID   int
+		Tag  string
+		Kept bool
+	}
+	type Row struct {
+		Base
+		Name string
+	}
+	src := []Row{
+		{Base{1, "x", true}, "a"},
+		{Base{2, "y", false}, "b"},
+	}
+	fake := &fakeRange{}
+	or := &optionedRange{rng: fake, opts: rangeOptions{header: true}}
+	if err := or.Set(src); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	grid, ok := fake.setValue.([][]interface{})
+	if !ok {
+		t.Fatalf("Set wrote %T, want [][]interface{}", fake.setValue)
+	}
+	// The fake Range accepts any Go value, so a cell holding a whole struct
+	// would round-trip through decodeStructSlice and this test would pass
+	// vacuously — real Excel rejects it at scalarToVariant ("unsupported cell
+	// type"). Assert the cells are the scalars the SAFEARRAY encoder accepts.
+	assertScalarCells(t, grid)
+	var out []Row
+	if err := decodeStructSlice(reflect.ValueOf(&out).Elem(), grid, ""); err != nil {
+		t.Fatalf("decodeStructSlice: %v", err)
+	}
+	if !reflect.DeepEqual(out, src) {
+		t.Errorf("round trip: got %+v, want %+v", out, src)
+	}
+}
+
+// assertScalarCells fails the test if any cell of grid is a composite value the
+// SAFEARRAY encoder (sugar.scalarToVariant) refuses — the fake Range does not
+// model that rejection, so the assertion has to.
+func assertScalarCells(t *testing.T, grid [][]interface{}) {
+	t.Helper()
+	for r, row := range grid {
+		for c, cell := range row {
+			if cell == nil {
+				continue
+			}
+			if _, isTime := cell.(time.Time); isTime {
+				continue
+			}
+			switch reflect.ValueOf(cell).Kind() {
+			case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array, reflect.Ptr:
+				t.Errorf("cell (%d,%d) is %T (%v) — not a value Excel can store",
+					r, c, cell, cell)
+			}
+		}
+	}
+}
+
+// TestStructFields_EmbeddedTimeIsALeaf is the carve-out pin that stops the
+// flattening from regressing behaviour that WORKS today. time.Time is a struct
+// with no exported fields, so expanding it would yield zero columns and silently
+// drop the field — while an embedded time.Time already decodes positionally
+// today, because AssignableTo(time.Time) matches at field level.
+func TestStructFields_EmbeddedTimeIsALeaf(t *testing.T) {
+	type R struct {
+		time.Time
+		Name string
+	}
+	fields, err := structFields(reflect.TypeOf(R{}))
+	if err != nil {
+		t.Fatalf("structFields: %v", err)
+	}
+	if len(fields) != 2 {
+		names := make([]string, len(fields))
+		for i, f := range fields {
+			names[i] = f.Name
+		}
+		t.Fatalf("structFields(R) = %v (%d columns), want 2 (Time, Name)", names, len(fields))
+	}
+	if fields[0].Name != "Time" || fields[1].Name != "Name" {
+		t.Errorf("structFields(R) names = %q,%q; want Time,Name", fields[0].Name, fields[1].Name)
+	}
+	// And the positional decode must still populate it.
+	when := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	var out []R
+	if err := decodeStructSlicePositional(reflect.ValueOf(&out).Elem(), [][]interface{}{{when, "x"}}, ""); err != nil {
+		t.Fatalf("decodeStructSlicePositional: %v", err)
+	}
+	if len(out) != 1 || !out[0].Time.Equal(when) || out[0].Name != "x" {
+		t.Errorf("got %+v, want [{%v x}]", out, when)
+	}
+}
+
+// TestStructFields_NamedStructIsNotExpanded pins the other carve-out: only
+// ANONYMOUS embedded structs expand. A named struct field stays one column,
+// matching Go's own promotion rule and the header path, which cannot reach
+// inside it either.
+func TestStructFields_NamedStructIsNotExpanded(t *testing.T) {
+	type Base struct {
+		ID int
+	}
+	type R struct {
+		Inner Base
+		Name  string
+	}
+	fields, err := structFields(reflect.TypeOf(R{}))
+	if err != nil {
+		t.Fatalf("structFields: %v", err)
+	}
+	if len(fields) != 2 || fields[0].Name != "Inner" || fields[1].Name != "Name" {
+		t.Fatalf("structFields(R) = %+v, want [Inner Name]", fields)
+	}
+	if fields[0].Type != reflect.TypeOf(Base{}) {
+		t.Errorf("Inner column type = %v, want %v (unexpanded)", fields[0].Type, reflect.TypeOf(Base{}))
+	}
+}
+
+// TestStructFields_NestedEmbedAndUnexported covers the remaining shapes: an
+// embed inside an embed flattens depth-first, unexported leaves are skipped, and
+// an embedded struct with no exported leaves stays a single column so the
+// surrounding column indices do not shift.
+func TestStructFields_NestedEmbedAndUnexported(t *testing.T) {
+	type Inner struct {
+		X       int
+		skipped string //nolint:unused
+	}
+	type Mid struct {
+		Inner
+		Y int
+	}
+	type Empty struct{ hidden int } //nolint:unused
+	type R struct {
+		Mid
+		Empty
+		Z int
+	}
+	fields, err := structFields(reflect.TypeOf(R{}))
+	if err != nil {
+		t.Fatalf("structFields: %v", err)
+	}
+	var got []string
+	for _, f := range fields {
+		got = append(got, f.Name)
+	}
+	want := []string{"X", "Y", "Empty", "Z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("structFields(R) = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(fields[0].Index, []int{0, 0, 0}) {
+		t.Errorf("X Index = %v, want [0 0 0]", fields[0].Index)
+	}
+}
+
+// TestStructFields_AmbiguousPromotedNameRejected is the safety valve Go's
+// promotion rules force: when a flattened leaf name does not resolve back
+// through FieldByName to the same field, Set would write a column that Get
+// cannot read back. Rather than invent a resolution the header path does not
+// share, structFields refuses the struct.
+func TestStructFields_AmbiguousPromotedNameRejected(t *testing.T) {
+	type A struct{ Name string }
+	type B struct{ Name string }
+	type Ambiguous struct {
+		A
+		B
+	}
+	if _, err := structFields(reflect.TypeOf(Ambiguous{})); err == nil {
+		t.Error("structFields on two embeds sharing a leaf name should error")
+	}
+	// Shadowing is the same hazard: Go resolves Name to the outer field, so the
+	// inner column would be written and then read back into the wrong field.
+	type Shadow struct {
+		A
+		Name string
+	}
+	if _, err := structFields(reflect.TypeOf(Shadow{})); err == nil {
+		t.Error("structFields on a shadowed embedded leaf name should error")
+	}
+}
+
 // TestDecodeStructSlice_UnknownHeader verifies an unknown header is silently
 // skipped (xlwings parity — pandas decode is lenient).
 func TestDecodeStructSlice_UnknownHeader(t *testing.T) {
@@ -329,6 +573,133 @@ func TestGet_ScalarPointer(t *testing.T) {
 	}
 	if f != 42.5 {
 		t.Errorf("got %v, want 42.5", f)
+	}
+}
+
+// TestAssign_IntegerIntoStringIsDigitsNotRune pins the integer-source /
+// string-destination rule: Go's reflect Convert turns an integer into the
+// string holding that CODE POINT (int32(65) -> "A", int(0) -> "\x00"), which is
+// never what a spreadsheet caller means. The digits must win.
+func TestAssign_IntegerIntoStringIsDigitsNotRune(t *testing.T) {
+	cases := []struct {
+		val  interface{}
+		want string
+	}{
+		{int32(65), "65"},
+		{int(0), "0"},
+		{int64(1), "1"},
+		{uint8(65), "65"},
+		{int(-45), "-45"},
+	}
+	for _, c := range cases {
+		var s string
+		if err := assign(reflect.ValueOf(&s).Elem(), c.val); err != nil {
+			t.Fatalf("assign(%T(%v)): %v", c.val, c.val, err)
+		}
+		if s != c.want {
+			t.Errorf("assign(%T(%v)) = %q, want %q", c.val, c.val, s, c.want)
+		}
+		// assignField must agree — the two functions carried the same
+		// unguarded ConvertibleTo branch, and patching only one would leave
+		// the header and positional struct paths inconsistent.
+		var fs string
+		if err := assignField(reflect.ValueOf(&fs).Elem(), c.val, ""); err != nil {
+			t.Fatalf("assignField(%T(%v)): %v", c.val, c.val, err)
+		}
+		if fs != c.want {
+			t.Errorf("assignField(%T(%v)) = %q, want %q", c.val, c.val, fs, c.want)
+		}
+	}
+	// A float source is NOT ConvertibleTo string, so it never had the rune
+	// problem: it falls through to assignField's Sprint fallback (and to a
+	// clean error in assign, which has no fallback). Pinned so the new
+	// integer branch is not mistaken for what makes floats work.
+	var f string
+	if err := assignField(reflect.ValueOf(&f).Elem(), float64(65), ""); err != nil {
+		t.Fatalf("assignField(float64): %v", err)
+	}
+	if f != "65" {
+		t.Errorf("assignField(float64(65)) = %q, want \"65\"", f)
+	}
+	if err := assign(reflect.ValueOf(&f).Elem(), float64(65)); err == nil {
+		t.Errorf("assign(float64 -> string) = nil error, want the no-conversion error")
+	}
+}
+
+// TestAssignField_EmptyIntIntoStringField is the reachable trigger for the rune
+// trap: Options(Empty(0)) substitutes an int into the grid, and a string field
+// then received "\x00". Driven through the real Options().Get pipeline.
+func TestAssignField_EmptyIntIntoStringField(t *testing.T) {
+	type Row struct {
+		Name string
+	}
+	or := &optionedRange{
+		rng: &fakeRange{value: [][]interface{}{
+			{"Name"},
+			{nil},
+		}},
+		opts: rangeOptions{header: true, empty: 0},
+	}
+	var out []Row
+	if err := or.Get(&out); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d rows, want 1", len(out))
+	}
+	if out[0].Name != "0" {
+		t.Errorf("Empty(0) into a string field = %q, want %q", out[0].Name, "0")
+	}
+}
+
+// TestAssign_ByteSliceStillConvertsToString is a NEGATIVE pin: the integer
+// guard is keyed on the source KIND, so []byte (reflect.Slice, not Uint8) keeps
+// its existing ConvertibleTo behaviour.
+func TestAssign_ByteSliceStillConvertsToString(t *testing.T) {
+	var s string
+	if err := assign(reflect.ValueOf(&s).Elem(), []byte("hi")); err != nil {
+		t.Fatalf("assign([]byte): %v", err)
+	}
+	if s != "hi" {
+		t.Errorf("assign([]byte(\"hi\")) = %q, want \"hi\"", s)
+	}
+	var s2 string
+	if err := assign(reflect.ValueOf(&s2).Elem(), []rune("hi")); err != nil {
+		t.Fatalf("assign([]rune): %v", err)
+	}
+	if s2 != "hi" {
+		t.Errorf("assign([]rune(\"hi\")) = %q, want \"hi\"", s2)
+	}
+}
+
+// TestAssignField_NamedStringDestination is the other NEGATIVE pin: a named
+// string type must still take the string fast path in both assign and
+// assignField, and a named INTEGER type with a String() method must render
+// through that method (fmt.Sprint), not as a rune.
+func TestAssignField_NamedStringDestination(t *testing.T) {
+	type Code string
+	var c Code
+	if err := assignField(reflect.ValueOf(&c).Elem(), "AB", ""); err != nil {
+		t.Fatalf("assignField(string -> Code): %v", err)
+	}
+	if c != Code("AB") {
+		t.Errorf("assignField(\"AB\") = %q, want \"AB\"", string(c))
+	}
+	var c2 Code
+	if err := assign(reflect.ValueOf(&c2).Elem(), "AB"); err != nil {
+		t.Fatalf("assign(string -> Code): %v", err)
+	}
+	if c2 != Code("AB") {
+		t.Errorf("assign(\"AB\") = %q, want \"AB\"", string(c2))
+	}
+	// time.Duration is an int64 kind whose Convert-to-string yields U+FFFD
+	// garbage; fmt.Sprint renders "1s".
+	var s string
+	if err := assign(reflect.ValueOf(&s).Elem(), time.Second); err != nil {
+		t.Fatalf("assign(time.Duration): %v", err)
+	}
+	if s != "1s" {
+		t.Errorf("assign(time.Second) = %q, want \"1s\"", s)
 	}
 }
 
