@@ -82,6 +82,145 @@ func TestStringFromVariant_PassesScalars(t *testing.T) {
 	}
 }
 
+// TestStringFromVariant_RejectsNull covers the converter on its own, which is
+// what makes its (deliberately duplicated) Null check load-bearing rather than
+// decoration: sugar.Null has a String() method, so the toString fallback would
+// render the literal text "Null" and hand it back as if Excel had said the
+// number format WAS "Null" — the same forged-string failure the array guard
+// exists for.
+func TestStringFromVariant_RejectsNull(t *testing.T) {
+	got, err := stringFromVariant("NumberFormat", sugar.Null{})
+	requireNullError(t, "NumberFormat", err)
+	if got != "" {
+		t.Errorf("value on the error path = %q; want the empty string", got)
+	}
+	// The forged rendering must not be what comes back instead.
+	if got == "Null" {
+		t.Errorf("stringFromVariant forged the sentinel's String() as an Excel value")
+	}
+}
+
+// TestScalarGetters_RejectNull is the mixed-cell half of the getString array
+// fix. Excel answers a scalar property read with VT_NULL — "no single value" —
+// whenever the object spans cells that disagree. That decodes to sugar.Null,
+// and every one of the four typed getters must refuse it: before this, the
+// nil-shaped decode ran through toString/toFloat64/toBool/toInt32 and became
+// "" / 0 / false / 0 WITH A NIL ERROR, so `Range("A1:B1").MergeCells()` reported
+// a confident "not merged" for a half-merged block and `ColumnWidth()` reported
+// a width of 0 points.
+func TestScalarGetters_RejectNull(t *testing.T) {
+	fc := newFakeChain()
+	fc.root.value = sugar.Null{}
+
+	t.Run("getString", func(t *testing.T) {
+		got, err := getString(fc, "NumberFormat")
+		requireNullError(t, "NumberFormat", err)
+		if got != "" {
+			t.Errorf("value on the error path = %q; want the empty string", got)
+		}
+	})
+	t.Run("getFloat64", func(t *testing.T) {
+		got, err := getFloat64(fc, "ColumnWidth")
+		requireNullError(t, "ColumnWidth", err)
+		if got != 0 {
+			t.Errorf("value on the error path = %v; want 0", got)
+		}
+	})
+	t.Run("getBool", func(t *testing.T) {
+		got, err := getBool(fc, "MergeCells")
+		requireNullError(t, "MergeCells", err)
+		if got {
+			t.Errorf("value on the error path = %v; want false", got)
+		}
+	})
+	t.Run("getInt32", func(t *testing.T) {
+		got, err := getInt32(fc, "Color")
+		requireNullError(t, "Color", err)
+		if got != 0 {
+			t.Errorf("value on the error path = %v; want 0", got)
+		}
+	})
+}
+
+// TestTypedGetters_RejectNull drives the same VT_NULL through the PUBLIC
+// wrappers a user actually calls, so the guard cannot be satisfied by a helper
+// that no typed getter routes through. The five properties here are the ones
+// Excel documents as Null-on-disagreement; the guard itself is generic, so a
+// future getter inherits it.
+func TestTypedGetters_RejectNull(t *testing.T) {
+	cases := []struct {
+		name string
+		prop string
+		call func(sugar.Chain) error
+	}{
+		{"Range.NumberFormat", "NumberFormat", func(c sugar.Chain) error { _, err := wrapRange(c).NumberFormat(); return err }},
+		{"Range.ColumnWidth", "ColumnWidth", func(c sugar.Chain) error { _, err := wrapRange(c).ColumnWidth(); return err }},
+		{"Range.RowHeight", "RowHeight", func(c sugar.Chain) error { _, err := wrapRange(c).RowHeight(); return err }},
+		{"Range.MergeCells", "MergeCells", func(c sugar.Chain) error { _, err := wrapRange(c).MergeCells(); return err }},
+		{"Range.Color", "Color", func(c sugar.Chain) error { _, err := wrapRange(c).Color(); return err }},
+		{"Font.Name", "Name", func(c sugar.Chain) error { _, err := wrapFont(c).Name(); return err }},
+		{"Font.Size", "Size", func(c sugar.Chain) error { _, err := wrapFont(c).Size(); return err }},
+		{"Font.Bold", "Bold", func(c sugar.Chain) error { _, err := wrapFont(c).Bold(); return err }},
+		{"Font.Italic", "Italic", func(c sugar.Chain) error { _, err := wrapFont(c).Italic(); return err }},
+		{"Font.Color", "Color", func(c sugar.Chain) error { _, err := wrapFont(c).Color(); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeChain()
+			fc.root.value = sugar.Null{}
+			requireNullError(t, tc.prop, tc.call(fc))
+		})
+	}
+}
+
+// TestScalarGetters_NullGuardHasNoFalsePositives is the mandatory other half:
+// the guard must not be satisfiable by failing every read. A VT_EMPTY property
+// (nil) keeps its old lenient coercion, because an unset string property IS
+// legitimately the empty string and nothing distinguishes it from "absent".
+func TestScalarGetters_NullGuardHasNoFalsePositives(t *testing.T) {
+	fc := newFakeChain()
+
+	fc.root.value = nil
+	if got, err := getString(fc, "NumberFormat"); err != nil || got != "" {
+		t.Errorf("nil (VT_EMPTY) through getString = %q, %v; want \"\", nil", got, err)
+	}
+	if got, err := getBool(fc, "MergeCells"); err != nil || got {
+		t.Errorf("nil through getBool = %v, %v; want false, nil", got, err)
+	}
+
+	fc.root.value = "0.00"
+	if got, err := getString(fc, "NumberFormat"); err != nil || got != "0.00" {
+		t.Errorf("real format through getString = %q, %v; want \"0.00\", nil", got, err)
+	}
+	fc.root.value = 8.43
+	if got, err := getFloat64(fc, "ColumnWidth"); err != nil || got != 8.43 {
+		t.Errorf("real width through getFloat64 = %v, %v; want 8.43, nil", got, err)
+	}
+	fc.root.value = true
+	if got, err := getBool(fc, "MergeCells"); err != nil || !got {
+		t.Errorf("real bool through getBool = %v, %v; want true, nil", got, err)
+	}
+	fc.root.value = int32(255)
+	if got, err := getInt32(fc, "Color"); err != nil || got != 255 {
+		t.Errorf("real color through getInt32 = %v, %v; want 255, nil", got, err)
+	}
+}
+
+// requireNullError asserts err is the Null rejection for prop and that the
+// message tells the caller both what went wrong and how to opt out.
+func requireNullError(t *testing.T, prop string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s returned a nil error for a VT_NULL read", prop)
+	}
+	msg := err.Error()
+	for _, want := range []string{prop, "Null", "sugar.IsNull"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q should mention %q", msg, want)
+		}
+	}
+}
+
 // TestTrimTrailingMissing pins the optional-argument trim to the VALUE of the
 // omitted-optional marker, not to the *ole.VARIANT type. A wrapper that hands
 // callOptional a hand-built VARIANT for a picky COM slot must keep that

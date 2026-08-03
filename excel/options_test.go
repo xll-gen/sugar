@@ -12,6 +12,7 @@ package excel
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1106,3 +1107,43 @@ func (f *fakeRange) SetValue(v interface{}) Range { f.setValue = v; return f }
 func (f *fakeRange) Resize(r, c int) Range        { f.resizedRows, f.resizedCols = r, c; return f }
 func (f *fakeRange) Address() (string, error)     { return f.address, f.err }
 func (f *fakeRange) Offset(r, c int) Range        { return &fakeRange{value: f.offsetValue} }
+
+// TestAssignField_NullIsNotSprintedIntoAString closes the last forgery hole the
+// sugar.Null sentinel opened. assignField's last-resort branch is
+// `fmt.Sprint(val)` for a string destination, and Null HAS a String() method —
+// so a Null cell decoding into a string struct field would silently write the
+// literal text "Null" and look like real cell data. (Before the sentinel it
+// silently wrote "" instead, which was wrong more quietly.)
+//
+// The sibling `assign` needs no explicit arm: a struct source is neither
+// Assignable nor Convertible to any scalar destination, so it already reaches
+// the "cannot assign" error — asserted here so that stays true.
+func TestAssignField_NullIsNotSprintedIntoAString(t *testing.T) {
+	var s string
+	err := assignField(reflect.ValueOf(&s).Elem(), sugar.Null{}, "")
+	if err == nil {
+		t.Fatalf("assignField(Null -> string) = %q with no error; want a refusal", s)
+	}
+	if s == "Null" {
+		t.Errorf("the sentinel's String() was forged into the field as cell data")
+	}
+	if !strings.Contains(err.Error(), "Null") {
+		t.Errorf("error %v should name Null", err)
+	}
+
+	// An interface{} field still receives the sentinel — a caller asking for raw
+	// values must be able to see it, which is the whole point of the type.
+	var any interface{}
+	if err := assignField(reflect.ValueOf(&any).Elem(), sugar.Null{}, ""); err != nil {
+		t.Fatalf("assignField(Null -> interface{}): %v", err)
+	}
+	if !sugar.IsNull(any) {
+		t.Errorf("interface{} field = %v (%T); want the Null sentinel", any, any)
+	}
+
+	// assign's numeric path: already an error, pinned so it stays one.
+	var f float64
+	if err := assign(reflect.ValueOf(&f).Elem(), sugar.Null{}); err == nil {
+		t.Errorf("assign(Null -> float64) = %v with no error; want a refusal", f)
+	}
+}

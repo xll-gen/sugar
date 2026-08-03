@@ -647,9 +647,10 @@ func (c *chain) IsDispatch() bool {
 // decode them here. IDispatch results are not values — use Store().
 //
 // Scalar results also route through decodeVariantScalar, which fills the
-// VT_CY / VT_DECIMAL / VT_ERROR gaps in go-ole's Value() switch (currency and
-// error cells would otherwise decode to a bare nil). VT_ERROR cells become a
-// typed CellError.
+// VT_CY / VT_DECIMAL / VT_ERROR / VT_NULL gaps in go-ole's Value() switch
+// (currency, error and "no single value" results would otherwise all decode to
+// a bare nil). VT_ERROR cells become a typed CellError; VT_NULL becomes the
+// Null sentinel, so it is distinguishable from VT_EMPTY (nil) — see Null.
 func (c *chain) Value() (interface{}, error) {
 	if c.err != nil {
 		return nil, c.err

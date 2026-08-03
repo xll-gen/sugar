@@ -174,6 +174,49 @@ hdr.Font().SetBold(true).SetSize(12).SetColor(excel.RGB(180, 0, 0))
 _ = sheet.Range("A2", "C2").Insert("down")
 ```
 
+#### Scalar getters on a multi-cell range
+
+Excel answers a *scalar* property read with `Null` — "there is no single value
+here" — whenever the object spans more than one cell and those cells disagree.
+`NumberFormat`, `ColumnWidth`, `RowHeight`, `MergeCells`, `Color` and every
+`Font()` getter can do this. sugar returns an **error** in that case rather than
+a coerced `""` / `0` / `false`, which is what those getters used to hand back
+with a nil error:
+
+```go
+sheet.Range("A1").SetNumberFormat("0.00")
+sheet.Range("B1").SetNumberFormat("yyyy-mm-dd")
+
+_, err := sheet.Range("A1:B1").NumberFormat()
+// err: excel: NumberFormat is Null: the object spans multiple cells whose
+//      NumberFormat values differ, ... test it with sugar.IsNull
+
+merged, err := sheet.Range("A1:B1").MergeCells() // half-merged block -> err != nil
+```
+
+If you want the lenient reading back, read the raw VARIANT off the chain and
+decide for yourself. `sugar.Null` is a distinct value from `nil` (which means
+VT_EMPTY — a genuinely empty cell or unset property):
+
+```go
+v, err := sheet.Range("A1:B1").Get("NumberFormat").Value()
+switch {
+case err != nil:
+    return err
+case sugar.IsNull(v):
+    // mixed formats — pick your own fallback
+case v == nil:
+    // the property is unset
+default:
+    format := v.(string)
+    _ = format
+}
+```
+
+The same distinction reaches `Range.Value()`: a `VT_NULL` cell decodes to
+`sugar.Null{}`, not `nil`. Excel never puts one in a value grid (blank cells are
+`VT_EMPTY`), but a database COM server spelling SQL NULL does.
+
 ### Charts
 
 `Worksheet.Charts()` manages embedded charts. Like xlwings, `excel.Chart`

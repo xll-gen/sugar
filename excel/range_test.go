@@ -408,6 +408,103 @@ func TestRange_FormulaMultiCellErrors(t *testing.T) {
 	})
 }
 
+// TestRange_MixedCellScalarPropertiesError is the mixed-cell twin of
+// TestRange_FormulaMultiCellErrors, and it exists to prove the PREMISE of the
+// VT_NULL work against real Excel — that these properties really do answer
+// Null when the cells disagree. The Excel-free tests
+// (TestScalarGetters_RejectNull / TestTypedGetters_RejectNull) prove only that
+// sugar refuses a Null once it has one; nothing but live Excel can show that
+// Excel produces one here.
+//
+// Each case seeds two cells that DISAGREE, asserts the single-cell read still
+// works (so a case cannot pass by the property being broken outright), then
+// asserts the two-cell read is an error naming the property.
+func TestRange_MixedCellScalarPropertiesError(t *testing.T) {
+	withSheet(t, func(sheet excel.Worksheet) {
+		// NumberFormat: two different formats.
+		if err := sheet.Range("A1").SetNumberFormat("0.00").Err(); err != nil {
+			t.Fatalf("seed A1 format: %v", err)
+		}
+		if err := sheet.Range("B1").SetNumberFormat("yyyy-mm-dd").Err(); err != nil {
+			t.Fatalf("seed B1 format: %v", err)
+		}
+		if got, err := sheet.Range("A1").NumberFormat(); err != nil || got != "0.00" {
+			t.Errorf("single-cell NumberFormat = %q, %v; want \"0.00\", nil", got, err)
+		}
+		if got, err := sheet.Range("A1", "B1").NumberFormat(); err == nil {
+			t.Errorf("mixed NumberFormat = %q with no error; want the Null error", got)
+		} else if !strings.Contains(err.Error(), "NumberFormat") || !strings.Contains(err.Error(), "Null") {
+			t.Errorf("mixed NumberFormat error = %v; should name the property and Null", err)
+		}
+
+		// ColumnWidth: two columns of different widths.
+		//
+		// THIS CASE ASSERTS THE OPPOSITE OF THE OTHER TWO, AND THAT IS THE
+		// MEASURED TRUTH, not a concession. Excel does NOT reliably answer
+		// VT_NULL for a mixed-width range: measured 2026-08-03 on
+		// 16.0.20228.20110, mixed ColumnWidth answered Double(9) — the FIRST
+		// column's width — in 15 of 15 runs of the minimal sequence, and only
+		// answered VT_NULL when BOTH a mixed NumberFormat and a mixed Font.Bold
+		// had been applied to the same sheet beforehand (3/3 in each of four
+		// bisected cells: widths-only 9, NumberFormat-first 9, Bold-first 9,
+		// both-first NULL). No mechanism was established for that dependency,
+		// so nothing here should be read as one.
+		//
+		// The consequence for sugar is narrow and benign: the Null rejection in
+		// the scalar getters is correct whenever a Null actually arrives, and
+		// for ColumnWidth it usually does not arrive. So this property must NOT
+		// be listed as "verified to answer Null against live Excel".
+		//
+		// Asserting the error here anyway — by reordering this block after the
+		// Font.Bold seeding so a Null appears — would be tuning the test until
+		// it passes, which is how a test stops describing the product.
+		if err := sheet.Range("A3").SetColumnWidth(9).Err(); err != nil {
+			t.Fatalf("seed A column width: %v", err)
+		}
+		if err := sheet.Range("B3").SetColumnWidth(17).Err(); err != nil {
+			t.Fatalf("seed B column width: %v", err)
+		}
+		if got, err := sheet.Range("A3").ColumnWidth(); err != nil || got == 0 {
+			t.Errorf("single-cell ColumnWidth = %v, %v; want a non-zero width", got, err)
+		}
+		switch got, err := sheet.Range("A3", "B3").ColumnWidth(); {
+		case err == nil && got == 9:
+			// Measured behavior: the first column's width, silently.
+		case err != nil && strings.Contains(err.Error(), "ColumnWidth"):
+			// Excel answered Null after all; the rejection fired. Also correct.
+		default:
+			t.Errorf("mixed ColumnWidth = %v, err = %v; want either the first column's width (9, nil) "+
+				"or a Null error naming ColumnWidth", got, err)
+		}
+
+		// Font.Bold: one bold cell next to a non-bold one.
+		if err := sheet.Range("A5").Font().SetBold(true).Err(); err != nil {
+			t.Fatalf("seed A5 bold: %v", err)
+		}
+		if err := sheet.Range("B5").Font().SetBold(false).Err(); err != nil {
+			t.Fatalf("seed B5 bold: %v", err)
+		}
+		if got, err := sheet.Range("A5").Font().Bold(); err != nil || !got {
+			t.Errorf("single-cell Font.Bold = %v, %v; want true, nil", got, err)
+		}
+		if got, err := sheet.Range("A5", "B5").Font().Bold(); err == nil {
+			// The pre-fix symptom: a confident "not bold" for a mixed run.
+			t.Errorf("mixed Font.Bold = %v with no error; want the Null error", got)
+		} else if !strings.Contains(err.Error(), "Bold") {
+			t.Errorf("mixed Font.Bold error = %v; should name the property", err)
+		}
+
+		// The escape hatch the error message advertises must actually work.
+		v, err := sheet.Range("A1", "B1").Get("NumberFormat").Value()
+		if err != nil {
+			t.Fatalf("raw NumberFormat read: %v", err)
+		}
+		if !sugar.IsNull(v) {
+			t.Errorf("raw mixed NumberFormat = %v (%T); want sugar.Null", v, v)
+		}
+	})
+}
+
 // TestRange_AutoFit proves the v1.0 behavior change: AutoFit now fits both
 // column width AND row height (xlwings parity), not columns only. We shrink a
 // cell's column and row, write content that needs more space, AutoFit, and

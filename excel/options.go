@@ -1104,6 +1104,20 @@ func assignField(dst reflect.Value, val interface{}, dateFormat string) error {
 		dst.Set(vv.Convert(dst.Type()))
 		return nil
 	}
+	// The VT_NULL sentinel must never reach the Sprint fallback below.
+	// sugar.Null HAS a String() method, so Sprint would write the literal text
+	// "Null" into the field and it would read as genuine cell data — the same
+	// forgery class as the "[[=1+1 =2+2]]" string stringFromVariant refuses.
+	// This sits AFTER the AssignableTo branch on purpose: an interface{} field
+	// still receives the sentinel, which is what a caller asking for raw values
+	// needs. (assign needs no such arm — a struct source is neither assignable
+	// nor convertible to a scalar destination, so it already errors.)
+	if sugar.IsNull(val) {
+		return fmt.Errorf(
+			"cannot assign %T to %s: the cell is Null (no single value); "+
+				"decode into an interface{} field and test it with sugar.IsNull",
+			val, dst.Type())
+	}
 	// Best-effort string conversion: Excel often hands strings to numeric
 	// destinations via TEXT-typed cells. Use Sprint as a last resort.
 	if dst.Kind() == reflect.String {

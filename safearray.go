@@ -534,6 +534,15 @@ func scalarToVariant(val interface{}, out *ole.VARIANT) error {
 	switch x := val.(type) {
 	case nil:
 		// VT_EMPTY — an empty cell.
+	case Null:
+		// VT_NULL. Present so a grid decoded from a COM server that uses NULL
+		// (an ADO recordset, say) can be written back unchanged: without this
+		// arm, adding the Null sentinel to the DECODE path would have turned a
+		// previously working read/modify/write round trip into an
+		// "unsupported cell type sugar.Null" error. Excel accepts a VT_NULL cell
+		// value the same way VBA's `Range("A1").Value = Null` does — it clears
+		// the cell — so no Excel behavior changes either.
+		*out = ole.NewVariant(ole.VT_NULL, 0)
 	case bool:
 		if x {
 			*out = ole.NewVariant(ole.VT_BOOL, 0xffff)
@@ -600,6 +609,48 @@ func setNumericVariant(out *ole.VARIANT, f float64) {
 // vtTypeMask isolates the base VARTYPE from a VARIANT's VT field, stripping
 // the VT_ARRAY / VT_BYREF / VT_VECTOR flag bits (Win32 VT_TYPEMASK = 0x0fff).
 const vtTypeMask ole.VT = 0x0fff
+
+// Null is the typed Go representation of a VT_NULL VARIANT — COM's "there is no
+// single value here", which is a DIFFERENT thing from VT_EMPTY ("there is no
+// value here").
+//
+// Excel returns VT_NULL from a *scalar* property read whenever the object spans
+// more than one cell and the cells disagree: `Range("A1:B1").NumberFormat` with
+// two different formats, `Range.MergeCells` over a partly merged block,
+// `Range.ColumnWidth` over columns of differing widths, `Font.Bold` over mixed
+// runs, `Interior.Color` over mixed fills. Outside Excel the same VARTYPE is how
+// a database COM server (ADO and friends) spells SQL NULL.
+//
+// go-ole v1.3.0's (*VARIANT).Value() has no VT_NULL case and returns a bare nil,
+// which made all of the above indistinguishable from an empty cell — and the
+// typed getters one layer up then coerced that nil to "" / 0 / false and handed
+// it back with a nil error. decodeVariantScalar returns this sentinel instead;
+// the excel package's scalar getters reject it with an explicit error, and a
+// caller that genuinely wants the lenient reading can ask for the raw value and
+// test it with IsNull.
+//
+// Null is an empty comparable struct, so `v == sugar.Null{}` works and a
+// `switch v.(type)` arm reads naturally. It deliberately does NOT implement
+// error: at the core-COM layer a NULL is a value, not a failure — only the
+// typed Excel wrappers, which promise a scalar, treat it as one.
+type Null struct{}
+
+// String renders the sentinel as "Null". Note this is NOT Excel's "#NULL!"
+// worksheet error (xlErrNull, cvErr 2000) — that one arrives as VT_ERROR and
+// decodes to CellError; the two are unrelated despite the name.
+func (Null) String() string { return "Null" }
+
+// IsNull reports whether a decoded VARIANT value is the VT_NULL sentinel.
+//
+// Use it rather than comparing against nil: nil means VT_EMPTY (a genuinely
+// empty cell / unset property), and conflating the two is the exact defect this
+// type exists to make impossible. It is a package function for the same reason
+// IsMissing is — Chain is an exported interface with in-tree implementers, so a
+// new method on it would be a breaking change.
+func IsNull(v interface{}) bool {
+	_, ok := v.(Null)
+	return ok
+}
 
 // CellError is the typed Go representation of an Excel error VARIANT (VT_ERROR)
 // — a cell holding #DIV/0!, #N/A, #VALUE!, and the like. go-ole v1.3.0's
@@ -686,6 +737,11 @@ type oleDecimal struct {
 func decodeVariantScalar(v *ole.VARIANT) interface{} {
 	byref := v.VT&ole.VT_BYREF != 0
 	switch v.VT & vtTypeMask {
+	case ole.VT_NULL:
+		// "No single value" — see the Null doc comment. go-ole answers nil here,
+		// which is VT_EMPTY's answer too; the whole point of the sentinel is that
+		// those two must not be the same Go value.
+		return Null{}
 	case ole.VT_BSTR:
 		if byref {
 			// VT_BSTR|VT_BYREF stores a BSTR* — leave it to go-ole rather than

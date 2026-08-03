@@ -48,6 +48,13 @@
 //   - strings compare lexicographically;
 //   - bools and nil support EQUALITY ONLY;
 //   - "x == nil" is the "is this empty / absent" idiom;
+//   - a VT_NULL operand (sugar.Null — "the cells disagree", or SQL NULL) is
+//     REFUSED for every comparison including ==, because VBA and SQL both make
+//     a NULL comparison itself NULL, i.e. neither true nor false. It is NOT
+//     nil: nil means VT_EMPTY, a genuinely empty cell. Before the sentinel
+//     existed a Null decoded to nil and "x == nil" answered TRUE for it, which
+//     is the wrong answer to the question the idiom asks. Pinned by
+//     TestComparison_NullOperandIsRefused;
 //   - every cross-kind pairing (number vs string, string vs bool, ...) is an
 //     error, not a fmt.Sprint comparison.
 //
@@ -742,6 +749,19 @@ func isComparisonOp(op string) bool {
 //   - every cross-type pairing is an ERROR, not a fmt.Sprint comparison.
 func evalComparison(op string, left, right interface{}, lv, rv reflect.Value) (interface{}, bool) {
 	eqOnly := op == "==" || op == "!="
+
+	// A VT_NULL COM value ("the cells disagree, there is no single value" /
+	// SQL NULL) is not comparable, and the check must come BEFORE the nil arm.
+	// It used to decode to a bare nil, so `x == nil` answered TRUE for it — the
+	// "is this cell empty" idiom giving a confident wrong answer. With the
+	// sugar.Null sentinel the untouched code would silently flip that to FALSE,
+	// which is no better. VBA and SQL both say a comparison against NULL is
+	// itself NULL; in a (value, ok) evaluator the honest spelling of "neither
+	// true nor false" is to refuse, and the caller then sees the shared
+	// unsupported-binary-operation error naming sugar.Null.
+	if sugar.IsNull(left) || sugar.IsNull(right) {
+		return nil, false
+	}
 
 	// nil: equality only, and nil equals only nil.
 	if left == nil || right == nil {

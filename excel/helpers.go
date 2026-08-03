@@ -47,13 +47,51 @@ func trimTrailingMissing(args []interface{}) []interface{} {
 	return args[:last+1]
 }
 
+// scalarProperty reads a scalar COM property off a chain and rejects the one
+// decoded shape that has no scalar meaning at all: VT_NULL.
+//
+// Excel answers a *scalar* property read with VT_NULL — "there is no single
+// value here" — whenever the object spans more than one cell and those cells
+// disagree: NumberFormat over two formats, MergeCells over a partly merged
+// block, ColumnWidth over columns of differing widths, Font.Bold over mixed
+// runs, Interior.Color over mixed fills. go-ole decoded that to a bare nil,
+// identical to VT_EMPTY, and the coercions below then produced "" / 0 / false
+// with a NIL ERROR — a confident wrong answer at the call site, which is the
+// same defect class as the forged "[[=1+1 =2+2]]" string stringFromVariant was
+// written to stop.
+//
+// The guard lives here, on the path all four typed getters share, rather than in
+// a per-property list: which properties Excel makes Null is its business and can
+// grow, and every getter added later inherits the refusal for free.
+func scalarProperty(c sugar.Chain, prop string, params ...interface{}) (interface{}, error) {
+	v, err := c.Get(prop, params...).Value()
+	if err != nil {
+		return nil, err
+	}
+	if sugar.IsNull(v) {
+		return nil, nullPropertyError(prop)
+	}
+	return v, nil
+}
+
+// nullPropertyError is the single wording for a refused VT_NULL scalar read. It
+// names the property, says what Null means, and points at the escape hatch —
+// the raw chain — for a caller who wants the lenient reading back.
+func nullPropertyError(prop string) error {
+	return fmt.Errorf(
+		"excel: %s is Null: the object spans multiple cells whose %s values differ, "+
+			"so there is no single value to return — narrow it to one cell, or read "+
+			"the raw VARIANT with Get(%q).Value() and test it with sugar.IsNull",
+		prop, prop, prop)
+}
+
 // getInt32 reads an int32-family scalar COM property off a chain and coerces it
 // through toInt32. It is the generic form of the repeated
 // `c.Get(prop).Value()` + narrow pattern used by every Count/Index/Row/Column
 // getter. Extra params are forwarded to Get so indexed reads (e.g.
 // Get("Cells", r, c)) work too.
 func getInt32(c sugar.Chain, prop string, params ...interface{}) (int32, error) {
-	v, err := c.Get(prop, params...).Value()
+	v, err := scalarProperty(c, prop, params...)
 	if err != nil {
 		return 0, err
 	}
@@ -64,7 +102,7 @@ func getInt32(c sugar.Chain, prop string, params ...interface{}) (int32, error) 
 // through toFloat64. Generic form of the geometry-getter pattern
 // (Left/Top/Width/Height/ColumnWidth/RowHeight).
 func getFloat64(c sugar.Chain, prop string, params ...interface{}) (float64, error) {
-	v, err := c.Get(prop, params...).Value()
+	v, err := scalarProperty(c, prop, params...)
 	if err != nil {
 		return 0, err
 	}
@@ -76,7 +114,7 @@ func getFloat64(c sugar.Chain, prop string, params ...interface{}) (float64, err
 // treats legacy 0/-1 VARIANT shapes as false/true, whereas a bare v.(bool)
 // type-assert silently returns false for those.
 func getBool(c sugar.Chain, prop string, params ...interface{}) (bool, error) {
-	v, err := c.Get(prop, params...).Value()
+	v, err := scalarProperty(c, prop, params...)
 	if err != nil {
 		return false, err
 	}
@@ -87,7 +125,7 @@ func getBool(c sugar.Chain, prop string, params ...interface{}) (bool, error) {
 // through stringFromVariant. Generic form of the Name/Address/Formula/Path
 // getter pattern.
 func getString(c sugar.Chain, prop string, params ...interface{}) (string, error) {
-	v, err := c.Get(prop, params...).Value()
+	v, err := scalarProperty(c, prop, params...)
 	if err != nil {
 		return "", err
 	}
@@ -105,7 +143,17 @@ func getString(c sugar.Chain, prop string, params ...interface{}) (string, error
 // Excel value, so callers silently stored or re-wrote garbage. No Excel string
 // property can legitimately be a slice, so the guard has no false positives:
 // arrays become an explicit error instead of a forged string.
+//
+// The VT_NULL sentinel is refused for the same reason, and this repeats the
+// check scalarProperty already made on the getString path deliberately: this
+// function is the package's standalone "decoded VARIANT -> string" converter,
+// and sugar.Null has a String() method, so toString would render the literal
+// text "Null" and hand it back as if Excel had said the number format was
+// "Null". A forged string is precisely what this function exists to prevent.
 func stringFromVariant(prop string, v interface{}) (string, error) {
+	if sugar.IsNull(v) {
+		return "", nullPropertyError(prop)
+	}
 	if rows, cols, isArray := variantArrayShape(v); isArray {
 		return "", fmt.Errorf(
 			"excel: %s returned a %dx%d array, not a string: the object spans "+

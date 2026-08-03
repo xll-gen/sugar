@@ -169,15 +169,25 @@ var verbKinds = map[string]dispatchKind{
 // helperArgKinds maps this package's member-name-taking helpers to the kind
 // they imply and the argument index holding the member name. getInt32 and
 // friends all route through chain.Get; callOptional routes through chain.Call.
+//
+// NOT COVERAGE — read this before citing the scalarProperty row. The scanner
+// only classifies a call whose member argument is a STRING LITERAL. Every
+// present caller of scalarProperty is getInt32/getFloat64/getBool/getString,
+// which forward their own `prop` VARIABLE, so the row matches nothing today and
+// deleting it leaves the whole excel suite green (measured). It is registered
+// ahead of a caller, not behind one: the day someone writes
+// `scalarProperty(c, "NumberFormat")` directly, the row is what stops it being
+// classified as a method. Do not count it when tallying what this test pins.
 var helperArgKinds = map[string]struct {
 	kind dispatchKind
 	arg  int
 }{
-	"getInt32":     {kindProperty, 1},
-	"getFloat64":   {kindProperty, 1},
-	"getBool":      {kindProperty, 1},
-	"getString":    {kindProperty, 1},
-	"callOptional": {kindMethod, 1},
+	"scalarProperty": {kindProperty, 1}, // see the NOT COVERAGE note above
+	"getInt32":       {kindProperty, 1},
+	"getFloat64":     {kindProperty, 1},
+	"getBool":        {kindProperty, 1},
+	"getString":      {kindProperty, 1},
+	"callOptional":   {kindMethod, 1},
 }
 
 type memberUse struct {

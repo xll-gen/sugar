@@ -366,3 +366,49 @@ func TestComparison_NonDispatchObjectChainComparesEqualToNil(t *testing.T) {
 		t.Errorf("dispatch-operand error = %v; want the object-operand refusal", err)
 	}
 }
+
+// TestComparison_NullOperandIsRefused pins what a VT_NULL COM value does in a
+// comparison.
+//
+// Before sugar grew the Null sentinel, a VT_NULL property decoded to a bare nil,
+// so `x == nil` answered TRUE for it — "this multi-cell property is empty",
+// which is a confident wrong answer: VT_NULL means the cells DISAGREE, not that
+// they are blank. With the sentinel, the naive outcome would be a silent flip to
+// FALSE. Neither is acceptable, so a Null operand is refused the same way a COM
+// object operand is: SQL/VBA semantics say NULL compared with anything is
+// itself NULL, and Go's `(bool, error)` spelling of "neither true nor false" is
+// the error.
+//
+// The two control rows are load-bearing: a real nil operand must still answer
+// TRUE (that is the "is this cell empty" idiom), and a Null on the RIGHT must be
+// refused too, or the guard would only cover half the expressions.
+func TestComparison_NullOperandIsRefused(t *testing.T) {
+	nullChain := &stubChain{isDispatch: false, value: sugar.Null{}}
+
+	for _, expr := range []string{"x == nil", "x != nil", "x == 1", "x < 1", "1 < x"} {
+		res, err := Eval(expr, map[string]interface{}{"x": nullChain})
+		if err == nil {
+			t.Errorf("Eval(%q) with a Null operand = %v, want an error", expr, res)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unsupported binary operation") {
+			t.Errorf("Eval(%q) error = %v; want the shared unsupported-operation message", expr, err)
+		}
+		if !strings.Contains(err.Error(), "sugar.Null") {
+			t.Errorf("Eval(%q) error = %v; should name sugar.Null so the cause is findable", expr, err)
+		}
+	}
+
+	// Control 1: a genuinely empty (VT_EMPTY) chain still compares equal to nil.
+	empty := &stubChain{isDispatch: false, value: nil}
+	got, err := Eval("x == nil", map[string]interface{}{"x": empty})
+	if err != nil || got != true {
+		t.Errorf(`Eval("x == nil") on a VT_EMPTY chain = %v, %v; want true, nil`, got, err)
+	}
+
+	// Control 2: a plain value comparison is untouched.
+	got, err = Eval("x == 1", map[string]interface{}{"x": &stubChain{value: 1.0}})
+	if err != nil || got != true {
+		t.Errorf(`Eval("x == 1") on a numeric chain = %v, %v; want true, nil`, got, err)
+	}
+}
